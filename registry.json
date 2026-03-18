@@ -1,0 +1,17 @@
+{
+  "core": {
+    "latest_version": "0.1.0",
+    "download_url": "https://github.com/KalaimaranB/BioPro/releases/latest"
+  },
+  "modules": [
+    {
+      "id": "western_blot",
+      "name": "Western Blot Pro",
+      "version": "0.1.0",
+      "author": "BioPro Team",
+      "description": "Automated lane detection, band matching, and molecular weight calculation for Western Blots.",
+      "icon": "🧬",
+      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/v1.0.0/western_blot.zip"
+    }
+  ]
+}
