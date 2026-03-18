@@ -11,7 +11,7 @@
       "min_core_version": "1.0.0",
       "description": "Advanced automated lane and band detection for gel electrophoresis.",
       "author": "BioPro Team",
-      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/v0.1.0/Western.Blot.zip"
+      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/v0.1.0/western_blot.zip"
     },
     "flow_cyto": {
       "name": "Flow Cytometry Clustering",
