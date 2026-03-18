@@ -1,17 +1,18 @@
 {
-  "core": {
-    "latest_version": "0.1.0",
-    "download_url": "https://github.com/KalaimaranB/BioPro/releases/latest"
+  "western_blot": {
+    "name": "Western Blot Pro",
+    "version": "1.0.1",
+    "min_core_version": "1.0.0",
+    "description": "Advanced automated lane and band detection for gel electrophoresis.",
+    "author": "BioPro Team",
+    "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/v0.1.0/Western.Blot.zip"
   },
-  "modules": [
-    {
-      "id": "western_blot",
-      "name": "Western Blot Pro",
-      "version": "0.1.0",
-      "author": "BioPro Team",
-      "description": "Automated lane detection, band matching, and molecular weight calculation for Western Blots.",
-      "icon": "🧬",
-      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/v0.1.0/Western.Blot.zip"
-    }
-  ]
+  "flow_cyto": {
+    "name": "Flow Cytometry Clustering",
+    "version": "0.9.0",
+    "min_core_version": "1.2.0",
+    "description": "K-means clustering for cell populations.",
+    "author": "BioPro Team",
+    "download_url": "https://raw.githubusercontent.com/YourOrg/BioPro-Plugins/main/flow_cyto.py"
+  }
 }
