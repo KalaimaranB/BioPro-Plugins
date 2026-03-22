@@ -7,7 +7,7 @@
   "plugins": {
     "western_blot": {
       "name": "Western Blot Pro",
-      "version": "1.0.1",
+      "version": "1.0.2",
       "min_core_version": "1.0.0",
       "description": "Advanced automated lane and band detection for gel electrophoresis.",
       "author": "BioPro Team",
