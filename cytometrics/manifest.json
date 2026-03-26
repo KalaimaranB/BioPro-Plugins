@@ -1,0 +1,10 @@
+{
+  "id": "cytometrics",
+  "name": "CytoMetrics",
+  "version": "0.1.0-beta",
+  "description": "AI-assisted multi-channel cell morphology quantification.",
+  "author": "Kalaimaran Balasothy",
+  "icon": "🦠",
+  "entry_point": "ui.main_panel.CytoMetricsPanel",
+  "tags": ["morphology", "segmentation", "quantification", "fluorescence"]
+}
