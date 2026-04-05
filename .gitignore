@@ -1,0 +1,9 @@
+.DS_Store
+__MACOSX/
+__pycache__/
+*.pyc
+.idea/
+installed.json
+flow_implementation_plan.md
+memory_context/
+*.log

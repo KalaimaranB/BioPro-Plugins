@@ -1,0 +1,25 @@
+{
+  "core_app": {
+    "version": "1.0.0",
+    "release_notes": "Initial release with dynamic plugin architecture.",
+    "download_url": "https://github.com/KalaimaranB/BioPro/releases/latest"
+  },
+  "plugins": {
+    "western_blot": {
+      "name": "Western Blot Pro",
+      "version": "1.1.0",
+      "min_core_version": "1.0.0",
+      "description": "Scientific-grade densitometry with automated lane/gap detection and advanced base-line processing.",
+      "author": "BioPro Team",
+      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/v1.1.0/western_blot.zip"
+    },
+    "cytometrics": {
+      "name": "Cytometrics",
+      "version": "1.0.1",
+      "min_core_version": "1.0.0",
+      "description": "Cell morphology analyzer",
+      "author": "BioPro Team",
+      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/v0.1.1/cytometrics.zip"
+    }
+  }
+}

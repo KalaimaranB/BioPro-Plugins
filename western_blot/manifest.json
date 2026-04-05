@@ -1,0 +1,8 @@
+{
+    "id": "biopro.modules.western_blot",
+    "name": "Western Blot Densitometry",
+    "version": "1.0.0",
+    "description": "Automated lane detection, band quantification, and Ponceau normalization.",
+    "author": "BioPro Contributors",
+    "icon": "🔬"
+}
