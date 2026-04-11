@@ -1,0 +1,43 @@
+name: Monorepo Auto-Release
+
+# Trigger the action when a push is made to the main branch
+on:
+  push:
+    branches:
+      - main
+    # Optional but recommended: Only trigger if one of your actual module folders changes.
+    # This stops the action from running if you just fix a typo in the root README.md.
+    paths:
+      - 'cytometrics/**'
+      - 'flow_cytometry/**'
+      - 'western_blot/**'
+
+# Give the Action permission to write commits and create releases
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 2 is required so the Python script can compare 
+          # the current commit to the previous one using `git diff`
+          fetch-depth: 2 
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        # Install zip utility for packaging the module folders
+        run: sudo apt-get update && sudo apt-get install -y zip
+
+      - name: Run Release Manager
+        env:
+          # GitHub provides this token automatically for the `gh` CLI tool
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }} 
+        run: python .github/scripts/release_manager.py
