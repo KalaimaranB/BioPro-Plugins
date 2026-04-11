@@ -1,0 +1,9 @@
+{
+  "name": "Custom Panel",
+  "description": "Blank template — define your own markers, tubes, and gating strategy from scratch.",
+  "markers": [],
+  "marker_mappings": [],
+  "groups": [],
+  "gate_template": null,
+  "protocol_notes": ""
+}

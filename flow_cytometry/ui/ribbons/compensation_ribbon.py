@@ -1,0 +1,280 @@
+"""Compensation ribbon — matrix calculation, import, and application.
+
+Provides toolbar actions for:
+- Calculating a spillover matrix from single-stain controls
+- Extracting an embedded matrix from FCS metadata ($SPILL)
+- Importing a matrix from CSV/TSV files
+- Viewing and editing the active matrix
+- Applying compensation to all samples
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtWidgets import (
+    QFileDialog,
+    QHBoxLayout,
+    QMessageBox,
+    QWidget,
+)
+
+from biopro.ui.theme import Colors, Fonts
+from biopro.shared.ui.ui_components import PrimaryButton, SecondaryButton
+
+from ...analysis.state import FlowState
+from ...analysis.experiment import SampleRole
+from ...analysis.compensation import (
+    calculate_spillover_matrix,
+    extract_spill_from_fcs,
+    import_matrix_from_csv,
+    export_matrix_to_csv,
+    apply_compensation,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class CompensationRibbon(QWidget):
+    """Toolbar ribbon for compensation actions.
+
+    Signals:
+        compensation_changed: Emitted after matrix is computed/imported/applied.
+        matrix_view_requested: Emitted to open the matrix editor dialog.
+    """
+
+    compensation_changed = pyqtSignal()
+    matrix_view_requested = pyqtSignal()
+
+    def __init__(self, state: FlowState, parent=None) -> None:
+        super().__init__(parent)
+        self._state = state
+        self._setup_ui()
+
+    def _setup_ui(self) -> None:
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(8)
+
+        btn_calc = PrimaryButton("🔬 Calculate Matrix")
+        btn_calc.setToolTip(
+            "Compute spillover matrix from single-stain controls.\n"
+            "Requires samples tagged with role 'Single Stain'."
+        )
+        btn_calc.clicked.connect(self._on_calculate)
+        layout.addWidget(btn_calc)
+
+        btn_extract = SecondaryButton("📄 Extract from FCS")
+        btn_extract.setToolTip(
+            "Read the $SPILL/$SPILLOVER keyword embedded in an FCS file's metadata."
+        )
+        btn_extract.clicked.connect(self._on_extract_from_fcs)
+        layout.addWidget(btn_extract)
+
+        btn_import = SecondaryButton("📥 Import CSV")
+        btn_import.setToolTip("Import a spillover matrix from a CSV or TSV file.")
+        btn_import.clicked.connect(self._on_import_csv)
+        layout.addWidget(btn_import)
+
+        btn_export = SecondaryButton("📤 Export CSV")
+        btn_export.setToolTip("Export the current spillover matrix to CSV.")
+        btn_export.clicked.connect(self._on_export_csv)
+        layout.addWidget(btn_export)
+
+        btn_apply = PrimaryButton("✅ Apply to All")
+        btn_apply.setToolTip(
+            "Apply the current compensation matrix to all loaded samples."
+        )
+        btn_apply.clicked.connect(self._on_apply_all)
+        layout.addWidget(btn_apply)
+
+        layout.addStretch()
+
+    # ── Actions ───────────────────────────────────────────────────────
+
+    def _on_calculate(self) -> None:
+        """Calculate spillover matrix from single-stain control samples."""
+        exp = self._state.experiment
+
+        # Find single-stain samples
+        single_stains = exp.get_samples_by_role(SampleRole.SINGLE_STAIN)
+        ss_data = [s.fcs_data for s in single_stains if s.fcs_data is not None]
+
+        if len(ss_data) < 2:
+            QMessageBox.warning(
+                self,
+                "Insufficient Controls",
+                f"Found {len(ss_data)} single-stain controls.\n\n"
+                "You need at least 2 single-stain samples to compute a "
+                "spillover matrix.\n\n"
+                "Assign sample roles in the Properties panel by selecting "
+                "each sample in the tree.",
+            )
+            return
+
+        # Find optional unstained control
+        unstained_samples = exp.get_samples_by_role(SampleRole.UNSTAINED)
+        unstained = None
+        if unstained_samples and unstained_samples[0].fcs_data:
+            unstained = unstained_samples[0].fcs_data
+
+        try:
+            comp = calculate_spillover_matrix(
+                ss_data, unstained=unstained
+            )
+            self._state.compensation = comp
+
+            QMessageBox.information(
+                self,
+                "Matrix Computed",
+                f"Successfully computed a {comp.n_channels}×{comp.n_channels} "
+                f"spillover matrix from {len(ss_data)} single-stain controls.\n\n"
+                "Channels:\n" + ", ".join(comp.channel_names),
+            )
+
+            self.compensation_changed.emit()
+            logger.info("Spillover matrix computed: %d×%d",
+                        comp.n_channels, comp.n_channels)
+
+        except Exception as exc:
+            logger.error("Compensation calculation failed: %s", exc)
+            QMessageBox.critical(
+                self, "Computation Error",
+                f"Failed to compute compensation matrix:\n{exc}"
+            )
+
+    def _on_extract_from_fcs(self) -> None:
+        """Extract $SPILL/$SPILLOVER from the first sample with one."""
+        exp = self._state.experiment
+
+        for sample in exp.samples.values():
+            if sample.fcs_data is None:
+                continue
+
+            comp = extract_spill_from_fcs(sample.fcs_data)
+            if comp is not None:
+                self._state.compensation = comp
+
+                QMessageBox.information(
+                    self,
+                    "Matrix Extracted",
+                    f"Found embedded {comp.n_channels}×{comp.n_channels} "
+                    f"spillover matrix in:\n{sample.display_name}\n\n"
+                    "Channels:\n" + ", ".join(comp.channel_names),
+                )
+                self.compensation_changed.emit()
+                return
+
+        QMessageBox.warning(
+            self,
+            "No Matrix Found",
+            "None of the loaded FCS files contain a $SPILL or $SPILLOVER "
+            "keyword in their metadata.\n\n"
+            "You can compute a matrix from single-stain controls or "
+            "import one from CSV instead.",
+        )
+
+    def _on_import_csv(self) -> None:
+        """Import a spillover matrix from CSV/TSV."""
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Spillover Matrix",
+            "",
+            "CSV Files (*.csv *.tsv *.txt);;All Files (*)",
+        )
+        if not path:
+            return
+
+        try:
+            comp = import_matrix_from_csv(Path(path))
+            self._state.compensation = comp
+
+            QMessageBox.information(
+                self,
+                "Matrix Imported",
+                f"Imported {comp.n_channels}×{comp.n_channels} matrix "
+                f"from:\n{Path(path).name}\n\n"
+                "Channels:\n" + ", ".join(comp.channel_names),
+            )
+            self.compensation_changed.emit()
+
+        except Exception as exc:
+            logger.error("Matrix import failed: %s", exc)
+            QMessageBox.critical(
+                self, "Import Error",
+                f"Failed to import matrix:\n{exc}"
+            )
+
+    def _on_export_csv(self) -> None:
+        """Export the current matrix to CSV."""
+        if self._state.compensation is None:
+            QMessageBox.information(
+                self, "No Matrix",
+                "No compensation matrix is currently loaded.\n"
+                "Calculate or import one first."
+            )
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Spillover Matrix",
+            "spillover_matrix.csv",
+            "CSV Files (*.csv);;TSV Files (*.tsv)",
+        )
+        if not path:
+            return
+
+        try:
+            export_matrix_to_csv(self._state.compensation, Path(path))
+            QMessageBox.information(
+                self, "Matrix Exported",
+                f"Spillover matrix saved to:\n{Path(path).name}"
+            )
+        except Exception as exc:
+            logger.error("Matrix export failed: %s", exc)
+
+    def _on_apply_all(self) -> None:
+        """Apply compensation to all loaded samples."""
+        comp = self._state.compensation
+        if comp is None:
+            QMessageBox.information(
+                self, "No Matrix",
+                "No compensation matrix is loaded.\n"
+                "Calculate, extract, or import one first."
+            )
+            return
+
+        exp = self._state.experiment
+        applied_count = 0
+        skipped_count = 0
+
+        for sample in exp.samples.values():
+            if sample.fcs_data is None:
+                skipped_count += 1
+                continue
+            if sample.is_compensated:
+                skipped_count += 1
+                continue
+
+            try:
+                compensated_df = apply_compensation(sample.fcs_data, comp)
+                sample.fcs_data.events = compensated_df
+                sample.is_compensated = True
+                applied_count += 1
+            except Exception as exc:
+                logger.warning(
+                    "Compensation failed for %s: %s",
+                    sample.display_name, exc
+                )
+                skipped_count += 1
+
+        msg = f"Compensation applied to {applied_count} sample(s)."
+        if skipped_count > 0:
+            msg += f"\n{skipped_count} sample(s) skipped (already compensated or no data)."
+
+        QMessageBox.information(self, "Compensation Applied", msg)
+        self.compensation_changed.emit()
+        logger.info("Compensation applied: %d applied, %d skipped.",
+                     applied_count, skipped_count)

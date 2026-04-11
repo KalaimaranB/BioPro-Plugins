@@ -1,0 +1,56 @@
+{
+  "name": "Simple Viability",
+  "description": "Minimal viability assessment using a fixable viability dye (FVD).  Just unstained control and FVD-stained sample.",
+  "markers": ["FVD"],
+  "marker_mappings": [
+    {"marker_name": "FVD", "fluorophore": "FVD eFluor 506", "channel": "", "color": "#9C27B0"}
+  ],
+  "groups": [
+    {
+      "name": "Unstained",
+      "role": "unstained",
+      "tubes": [
+        {"markers": []}
+      ]
+    },
+    {
+      "name": "Viability",
+      "role": "full_panel",
+      "tubes": [
+        {"markers": ["FVD"]}
+      ]
+    }
+  ],
+  "gate_template": {
+    "gate": null,
+    "statistics": {},
+    "children": [
+      {
+        "gate": {
+          "type": "PolygonGate",
+          "name": "Cells",
+          "x_param": "FSC-A",
+          "y_param": "SSC-A",
+          "adaptive": true,
+          "vertices": []
+        },
+        "statistics": {},
+        "children": [
+          {
+            "gate": {
+              "type": "RangeGate",
+              "name": "Live",
+              "x_param": "FVD",
+              "adaptive": true,
+              "low": 0,
+              "high": 1000
+            },
+            "statistics": {},
+            "children": []
+          }
+        ]
+      }
+    ]
+  },
+  "protocol_notes": "1. Stain with FVD (1/1000, 30 min, 4°C).\n2. Wash and acquire."
+}

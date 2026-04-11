@@ -1,0 +1,120 @@
+{
+  "name": "5-Color FMO Panel",
+  "description": "Complete 5-color panel with FVD viability, CD45, CD4, CD8, and CD19.  Includes unstained, single-stain compensation controls, and full FMO controls for every marker.",
+  "markers": ["FVD", "CD45", "CD4", "CD8", "CD19"],
+  "marker_mappings": [
+    {"marker_name": "FVD",  "fluorophore": "FVD eFluor 506", "channel": "", "color": "#9C27B0"},
+    {"marker_name": "CD45", "fluorophore": "PerCP-Cy5.5",    "channel": "", "color": "#2196F3"},
+    {"marker_name": "CD4",  "fluorophore": "FITC",           "channel": "", "color": "#4CAF50"},
+    {"marker_name": "CD8",  "fluorophore": "APC",            "channel": "", "color": "#F44336"},
+    {"marker_name": "CD19", "fluorophore": "PE",             "channel": "", "color": "#FF9800"}
+  ],
+  "groups": [
+    {
+      "name": "Unstained",
+      "role": "unstained",
+      "tubes": [
+        {"markers": []}
+      ]
+    },
+    {
+      "name": "Single Stains",
+      "role": "single_stain",
+      "tubes": [
+        {"markers": ["CD45"]},
+        {"markers": ["CD4"]},
+        {"markers": ["CD8"]},
+        {"markers": ["CD19"]},
+        {"markers": ["FVD"]}
+      ]
+    },
+    {
+      "name": "FMO Controls",
+      "role": "fmo_control",
+      "tubes": [
+        {"markers": ["FVD", "CD19", "CD4",  "CD45"], "fmo_minus": "CD8"},
+        {"markers": ["FVD", "CD19", "CD8",  "CD45"], "fmo_minus": "CD4"},
+        {"markers": ["FVD", "CD4",  "CD8",  "CD45"], "fmo_minus": "CD19"},
+        {"markers": ["FVD", "CD4",  "CD8",  "CD19"], "fmo_minus": "CD45"},
+        {"markers": ["CD45","CD4",  "CD8",  "CD19"], "fmo_minus": "FVD"}
+      ]
+    },
+    {
+      "name": "Full Panel",
+      "role": "full_panel",
+      "tubes": [
+        {"markers": ["FVD", "CD45", "CD4", "CD8", "CD19"]}
+      ]
+    }
+  ],
+  "gate_template": {
+    "gate": null,
+    "statistics": {},
+    "children": [
+      {
+        "gate": {
+          "type": "PolygonGate",
+          "name": "Lymphocytes",
+          "x_param": "FSC-A",
+          "y_param": "SSC-A",
+          "adaptive": true,
+          "vertices": []
+        },
+        "statistics": {},
+        "children": [
+          {
+            "gate": {
+              "type": "RectangleGate",
+              "name": "Singlets",
+              "x_param": "FSC-A",
+              "y_param": "FSC-H",
+              "adaptive": true,
+              "x_min": 0, "x_max": 262144,
+              "y_min": 0, "y_max": 262144
+            },
+            "statistics": {},
+            "children": [
+              {
+                "gate": {
+                  "type": "RangeGate",
+                  "name": "Live",
+                  "x_param": "FVD",
+                  "adaptive": true,
+                  "low": 0, "high": 1000
+                },
+                "statistics": {},
+                "children": [
+                  {
+                    "gate": {
+                      "type": "RangeGate",
+                      "name": "CD45+",
+                      "x_param": "CD45",
+                      "adaptive": true,
+                      "low": 500, "high": 262144
+                    },
+                    "statistics": {},
+                    "children": [
+                      {
+                        "gate": {
+                          "type": "QuadrantGate",
+                          "name": "T/B Cell Split",
+                          "x_param": "CD4",
+                          "y_param": "CD8",
+                          "adaptive": true,
+                          "x_mid": 500, "y_mid": 500
+                        },
+                        "statistics": {},
+                        "children": []
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "protocol_notes": "1. Block Fc receptors (1/100 dilution, 10 min on ice) before staining.\n2. Stain cells with antibody cocktails (30 min, 4°C, in the dark).\n3. Wash twice with FACS buffer.\n4. Acquire ≥10,000 events in the lymphocyte gate.\n5. Use FMO controls to set positive/negative boundaries for each marker."
+}
