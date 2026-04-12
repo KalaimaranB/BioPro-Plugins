@@ -8,7 +8,7 @@
     "western_blot": {
       "name": "Western Blot Densitometry",
       "version": "1.0.1",
-      "min_core_version": "1.0.0",
+      "min_core_version": "1.0.1",
       "description": "Automated lane detection, band quantification, and Ponceau normalization.",
       "author": "Kalaimaran Balasothy",
       "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/western_blot/v1.0.1/western_blot.zip"
@@ -16,7 +16,7 @@
     "cytometrics": {
       "name": "CytoMetrics",
       "version": "0.1.1-beta",
-      "min_core_version": "1.0.0",
+      "min_core_version": "1.0.1",
       "description": "AI-assisted multi-channel cell morphology quantification.",
       "author": "Kalaimaran Balasothy",
       "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/cytometrics/v0.1.1-beta/cytometrics.zip"
@@ -24,7 +24,7 @@
     "flow_cytometry": {
       "name": "Flow Cytometry Workspace",
       "version": "0.1.1",
-      "min_core_version": "1.0.0",
+      "min_core_version": "1.0.1",
       "description": "Scientist-centric flow cytometry analysis with FMO-guided gating, adaptive gates, workflow templates, and full workspace control.",
       "author": "Kalaimaran Balasothy",
       "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/flow_cytometry/v0.1.1/flow_cytometry.zip"
