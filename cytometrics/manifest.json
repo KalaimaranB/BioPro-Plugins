@@ -2,6 +2,7 @@
   "id": "cytometrics",
   "name": "CytoMetrics",
   "version": "0.1.1-beta",
+  "min_core_version": "1.0.1",
   "description": "AI-assisted multi-channel cell morphology quantification.",
   "author": "Kalaimaran Balasothy",
   "icon": "🦠",
