@@ -15,7 +15,7 @@ Adaptive gate support:
 from __future__ import annotations
 
 import logging
-from .transforms import apply_transform
+from .transforms import apply_transform, invert_transform
 from .scaling import AxisScale
 import uuid
 from abc import ABC, abstractmethod
@@ -206,7 +206,7 @@ class PolygonGate(Gate):
         self.y_scale = parse_scale(y_scale)
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
-        from .transforms import apply_transform, TransformType
+        from .transforms import apply_transform, invert_transform, TransformType
         from matplotlib.path import Path
         import numpy as np
 
