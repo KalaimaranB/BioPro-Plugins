@@ -105,6 +105,11 @@ def biexponential_transform(
     """
     cache_key = (top, width, positive, negative)
 
+    # Apply continuous +/-0.5 uniform dithering to prevent integer banding
+    # (barcode artifacts) which dramatically skew density calculations near 0
+    data_jitter = np.asarray(data, dtype=np.float64).copy()
+    data_jitter += np.random.uniform(-0.5, 0.5, size=data_jitter.shape)
+
     # ── Attempt 1: flowkit.transforms.LogicleTransform ────────────────
     try:
         if cache_key not in _logicle_cache:
@@ -118,14 +123,14 @@ def biexponential_transform(
             _logicle_cache[cache_key] = xform
 
         xform = _logicle_cache[cache_key]
-        return xform.apply(data)
+        return xform.apply(data_jitter)
     except (ImportError, AttributeError):
         pass
 
     # ── Attempt 2: flowutils.transforms.logicle ──────────────────────
     try:
         from flowutils.transforms import logicle as fu_logicle
-        return fu_logicle(data, t=top, w=width, m=positive, a=negative)
+        return fu_logicle(data_jitter, t=top, w=width, m=positive, a=negative)
     except ImportError:
         pass
 
@@ -135,7 +140,7 @@ def biexponential_transform(
         "Install flowkit for the real Logicle transform."
     )
     cofactor = 150.0
-    return np.arcsinh(data / cofactor)
+    return np.arcsinh(data_jitter / cofactor)
 
 
 def apply_transform(

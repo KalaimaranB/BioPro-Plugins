@@ -43,6 +43,7 @@ class FCSData:
     markers: list[str] = field(default_factory=list)
     events: Optional[pd.DataFrame] = None
     metadata: dict[str, str] = field(default_factory=dict)
+    is_compensated: bool = False
     _fk_sample: object = field(default=None, repr=False)
 
     @property
@@ -113,6 +114,30 @@ def _load_with_flowkit(path: Path) -> FCSData:
     # Metadata
     metadata = dict(sample.metadata) if hasattr(sample, "metadata") else {}
 
+    # Diagnostic: log which spill-related keys are present and all key names
+    spill_keys = [k for k in metadata if "spill" in k.lower() or "comp" in k.lower()]
+    logger.debug(
+        "FCS metadata keys for %s: %s",
+        path.name, sorted(metadata.keys())
+    )
+    if spill_keys:
+        logger.info(
+            "FCS spill/comp keys found in %s: %s",
+            path.name, {k: str(metadata[k])[:80] for k in spill_keys}
+        )
+    else:
+        logger.info(
+            "No $SPILL/$COMP keys found in %s metadata. "
+            "Available keys: %s",
+            path.name, sorted(metadata.keys())[:30]
+        )
+
+    # Auto-apply embedded compensation if present.
+    # BD FACSDiva writes the key as lowercase 'spill' (no $), FlowJo applies
+    # this automatically on load.  We do the same here so all downstream
+    # rendering sees compensated values without any manual user action.
+    is_comp = _auto_apply_spill(path.name, events_df, metadata)
+
     logger.info(
         "Loaded %s via FlowKit: %d events × %d channels",
         path.name, len(events_df), len(channels),
@@ -124,11 +149,81 @@ def _load_with_flowkit(path: Path) -> FCSData:
         markers=markers,
         events=events_df,
         metadata=metadata,
+        is_compensated=is_comp,
         _fk_sample=sample,
     )
 
 
-def _load_with_fcsparser(path: Path) -> FCSData:
+def _auto_apply_spill(filename: str, events_df: "pd.DataFrame", metadata: dict) -> bool:
+    """Apply an embedded spillover matrix to events_df in-place.
+
+    BD FACSDiva and Beckman Coulter instruments embed the compensation
+    matrix in the FCS TEXT segment as a comma-separated string under
+    the key 'spill', '$SPILL', '$SPILLOVER', or 'SPILLOVER'.  This
+    function finds whichever variant is present, parses it, and applies
+    ``D_raw @ S⁻¹`` to the matching fluorescence columns.
+
+    The mutation is in-place so the FCSData.events DataFrame already
+    contains compensated values by the time the caller returns.
+    """
+    # All known key variants, checked in priority order
+    spill_str: str | None = None
+    for key in ("$SPILLOVER", "$SPILL", "SPILLOVER", "SPILL", "spill", "spillover"):
+        if key in metadata:
+            spill_str = str(metadata[key])
+            break
+
+    if not spill_str:
+        return False   # No spill key — nothing to do
+
+    try:
+        parts = [p.strip() for p in spill_str.split(",") if p.strip()]
+        n = int(parts[0])
+        spill_channels = parts[1: n + 1]
+        values = [float(v) for v in parts[n + 1: n + 1 + n * n]]
+
+        if len(values) != n * n:
+            logger.warning(
+                "Spill string in %s malformed: expected %d values, got %d. "
+                "Skipping auto-compensation.",
+                filename, n * n, len(values)
+            )
+            return False
+
+        spill_matrix = np.array(values, dtype=np.float64).reshape(n, n)
+
+        # Only compensate channels that are actually in the DataFrame
+        present = [ch for ch in spill_channels if ch in events_df.columns]
+        if not present:
+            logger.warning(
+                "Spill channels %s not found in %s data columns %s. "
+                "Skipping auto-compensation.",
+                spill_channels, filename, list(events_df.columns)
+            )
+            return False
+
+        idx = [spill_channels.index(ch) for ch in present]
+        sub_spill = spill_matrix[np.ix_(idx, idx)]
+        sub_inv = np.linalg.inv(sub_spill)
+
+        raw = events_df[present].values.astype(np.float64)
+        events_df[present] = raw @ sub_inv.T
+
+        logger.info(
+            "Auto-applied embedded spill compensation to %s (%d/%d channels: %s)",
+            filename, len(present), n, present,
+        )
+        return True
+
+    except Exception as exc:
+        logger.warning(
+            "Failed to auto-apply spill compensation for %s: %s",
+            filename, exc,
+        )
+        return False
+
+
+def _load_with_fcsparser(path: Path) -> "FCSData":
     """Fallback loader using fcsparser."""
     import fcsparser
 

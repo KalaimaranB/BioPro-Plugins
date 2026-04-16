@@ -238,7 +238,7 @@ class GateController(QObject):
         self.propagation_requested.emit(gate_id, sample_id)
         return True
 
-    def split_population(self, node_id: str, sample_id: str) -> Optional[str]:
+    def split_population(self, sample_id: str, node_id: str) -> Optional[str]:
         """Create a sibling population that is the inverse of the target node.
 
         Allows a single gate to drive two populations (Inside/Outside).
@@ -265,7 +265,7 @@ class GateController(QObject):
         logger.info("Split population created: '%s' from '%s'", sibling.name, node.name)
         return sibling.node_id
 
-    def remove_population(self, node_id: str, sample_id: str) -> bool:
+    def remove_population(self, sample_id: str, node_id: str) -> bool:
         """Remove a population node from a sample's tree."""
         sample = self._state.experiment.samples.get(sample_id)
         if sample is None:
@@ -283,7 +283,7 @@ class GateController(QObject):
         return True
 
     def rename_population(
-        self, node_id: str, sample_id: str, new_name: str
+        self, sample_id: str, node_id: str, new_name: str
     ) -> bool:
         """Rename a population.
         

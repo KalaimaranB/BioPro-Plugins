@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import logging
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -239,7 +239,7 @@ class FlowCytometryPanel(QWidget):
         BioPro interface signals."""
 
         # ── Sample list → graph + properties ──────────────────────────
-        self._sample_list.sample_double_clicked.connect(self._graph_manager.open_graph_for_sample)
+        self._sample_list.sample_double_clicked.connect(self._graph_manager.open_graph_with_context)
         self._sample_list.selection_changed.connect(
             lambda sid: self._properties_panel.show_sample_properties(sid, None)
         )
@@ -331,8 +331,14 @@ class FlowCytometryPanel(QWidget):
             # AUTO-SELECT the new node so properties are shown immediately
             self._on_gate_selected(node_id)
             
+            # Navigate into the new gate automatically so the user can keep gating
+            # We defer this via QTimer (150ms) to ensure the double-click event loop finishes
+            # processing first. Otherwise, macOS Native Window handler might misinterpret
+            # the orphaned double-click event and force the app out of full screen.
+            QTimer.singleShot(150, lambda: self._graph_manager.open_graph_for_sample(sample_id, node_id))
+            
             self.status_message.emit(
-                f"Gate created on {self._sample_name(sample_id)}."
+                f"⟳ Propagating gate to other samples…"
             )
 
     def _on_gate_added(self, sample_id: str, node_id: str) -> None:
@@ -375,7 +381,8 @@ class FlowCytometryPanel(QWidget):
 
     def _on_propagation_complete(self) -> None:
         """All samples finished propagation."""
-        self.status_message.emit("Gate propagation complete.")
+        n = len(self._state.experiment.samples)
+        self.status_message.emit(f"✓ Gate propagation complete ({n} samples updated).")
 
     def _on_delete_selected_gate(self) -> None:
         """Delete the gate currently selected on the canvas."""

@@ -178,6 +178,7 @@ class GraphManager(QWidget):
         graph.gate_drawn.connect(self._on_gate_drawn)
         graph.gate_selection_changed.connect(self._on_gate_selection)
         graph.axis_scale_sync_requested.connect(self._on_axis_scale_sync)
+        graph.navigation_requested.connect(self.navigate_active_graph)
 
         tab_label = sample.display_name
         if node_id:
@@ -245,6 +246,94 @@ class GraphManager(QWidget):
             widget.deleteLater()
 
         self._update_visibility()
+
+    def _get_parallel_node(self, source_sample_id: str, source_node_id: str, target_sample_id: str) -> Optional[str]:
+        """Find the equivalent gate node ID in another sample by name path."""
+        source_sample = self._state.experiment.samples.get(source_sample_id)
+        target_sample = self._state.experiment.samples.get(target_sample_id)
+        if not source_sample or not target_sample or not source_node_id:
+            return None
+            
+        curr_node = source_sample.gate_tree.find_node_by_id(source_node_id)
+        if not curr_node:
+            return None
+            
+        path = []
+        c = curr_node
+        while c and not c.is_root:
+            path.append(c.name)
+            c = c.parent
+        path.reverse()
+        
+        t_node = target_sample.gate_tree
+        for p_name in path:
+            matched = False
+            for child in t_node.children:
+                if child.name == p_name:
+                    t_node = child
+                    matched = True
+                    break
+            if not matched:
+                break
+                
+        if t_node and not t_node.is_root:
+            return t_node.node_id
+        return None
+
+    def navigate_active_graph(self, action: str) -> None:
+        """Handle Next/Prev/Parent navigation from a graph toolbar."""
+        idx = self._tabs.currentIndex()
+        if idx < 0:
+            return
+            
+        from .graph_window import GraphWindow
+        graph: GraphWindow = self._tabs.widget(idx)
+        current_sample_id = graph.sample_id
+        current_node_id = graph.node_id
+        
+        sample = self._state.experiment.samples.get(current_sample_id)
+        if not sample:
+            return
+            
+        if action == "parent_gate":
+            if not current_node_id:
+                return
+            node = sample.gate_tree.find_node_by_id(current_node_id)
+            if node and node.parent and not node.parent.is_root:
+                self.open_graph_for_sample(current_sample_id, node.parent.node_id)
+            else:
+                self.open_graph_for_sample(current_sample_id, None)
+            return
+            
+        # For next/prev, iterate over samples
+        samples = list(self._state.experiment.samples.values())
+        if not samples:
+            return
+            
+        base_idx = next((i for i, s in enumerate(samples) if s.sample_id == current_sample_id), -1)
+        if base_idx < 0:
+            return
+            
+        if action == "next_sample":
+            target_idx = (base_idx + 1) % len(samples)
+        elif action == "prev_sample":
+            target_idx = (base_idx - 1) % len(samples)
+        else:
+            return
+            
+        target_sample = samples[target_idx]
+        target_node_id = self._get_parallel_node(current_sample_id, current_node_id, target_sample.sample_id)
+        self.open_graph_for_sample(target_sample.sample_id, target_node_id)
+
+    def open_graph_with_context(self, sample_id: str) -> None:
+        """Open a graph for a sample, preserving the gating context of the current active graph."""
+        graph = self.get_active_graph()
+        if not graph or not graph.node_id:
+            self.open_graph_for_sample(sample_id)
+            return
+            
+        target_node_id = self._get_parallel_node(graph.sample_id, graph.node_id, sample_id)
+        self.open_graph_for_sample(sample_id, target_node_id)
 
     def _on_tab_changed(self, index: int) -> None:
         """Apply the current drawing mode when switching tabs."""

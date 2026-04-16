@@ -19,7 +19,7 @@ import logging
 from typing import Optional
 
 import numpy as np
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -71,6 +71,7 @@ class GraphWindow(QWidget):
     gate_selection_changed = pyqtSignal(object)    # gate_id or None
     axis_changed = pyqtSignal()
     axis_scale_sync_requested = pyqtSignal(str, object)  # channel_name, AxisScale
+    navigation_requested = pyqtSignal(str)  # "next_sample", "prev_sample", "parent_gate"
 
     def __init__(
         self,
@@ -86,7 +87,14 @@ class GraphWindow(QWidget):
         
         self._x_scale = AxisScale(TransformType.LINEAR)
         self._y_scale = AxisScale(TransformType.LINEAR)
-        
+
+        # Debounce timer: 100 ms after the last axis change before re-rendering.
+        # Prevents 5-10 redundant full redraws when the user scrolls through the combo.
+        self._axis_debounce = QTimer(self)
+        self._axis_debounce.setSingleShot(True)
+        self._axis_debounce.setInterval(100)
+        self._axis_debounce.timeout.connect(self._do_axis_render)
+
         self._setup_ui()
 
     @property
@@ -107,7 +115,32 @@ class GraphWindow(QWidget):
         layout.setContentsMargins(4, 4, 4, 4)
         layout.setSpacing(4)
 
-        # ── Breadcrumb bar ────────────────────────────────────────────
+        # ── Navigation & Breadcrumb bar ───────────────────────────────
+        nav_layout = QHBoxLayout()
+        nav_layout.setContentsMargins(0, 0, 0, 0)
+        nav_layout.setSpacing(4)
+        
+        # Prev / Next sample arrows
+        self._btn_prev = QPushButton("◀ Prev Sample")
+        self._btn_next = QPushButton("Next Sample ▶")
+        for btn in (self._btn_prev, self._btn_next):
+            btn.setFixedHeight(24)
+            self._style_transform_btn(btn)  # reuse the flat/accent style
+            nav_layout.addWidget(btn)
+            
+        self._btn_prev.clicked.connect(lambda: self.navigation_requested.emit("prev_sample"))
+        self._btn_next.clicked.connect(lambda: self.navigation_requested.emit("next_sample"))
+        
+        nav_layout.addSpacing(16)
+        
+        # Up to parent button
+        self._btn_parent = QPushButton("↑ Parent Gate")
+        self._btn_parent.setFixedHeight(24)
+        self._style_transform_btn(self._btn_parent)
+        self._btn_parent.setVisible(self._node_id is not None)  # Only if we are in a gate
+        self._btn_parent.clicked.connect(lambda: self.navigation_requested.emit("parent_gate"))
+        nav_layout.addWidget(self._btn_parent)
+
         self._breadcrumb = QLabel()
         self._breadcrumb.setStyleSheet(
             f"color: {Colors.FG_SECONDARY}; font-size: {Fonts.SIZE_SMALL}px;"
@@ -115,7 +148,10 @@ class GraphWindow(QWidget):
             f" border-radius: 4px;"
         )
         self._update_breadcrumb()
-        layout.addWidget(self._breadcrumb)
+        nav_layout.addWidget(self._breadcrumb)
+        nav_layout.addStretch()
+        
+        layout.addLayout(nav_layout)
 
         # ── Axis selection row ────────────────────────────────────────
         axis_row = QHBoxLayout()
@@ -151,6 +187,15 @@ class GraphWindow(QWidget):
         self._style_transform_btn(self._transform_btn)
         self._transform_btn.clicked.connect(self._open_transform_dialog)
         axis_row.addWidget(self._transform_btn)
+
+        # ── Render spinner ────────────────────────────────────────────
+        self._render_spinner = QLabel("⟳ Rendering…")
+        self._render_spinner.setStyleSheet(
+            f"color: #58a6ff; font-size: 11px; font-weight: 600;"
+            f" background: transparent; padding: 0 6px;"
+        )
+        self._render_spinner.setVisible(False)
+        axis_row.addWidget(self._render_spinner)
 
         axis_row.addStretch()
         layout.addLayout(axis_row)
@@ -243,9 +288,9 @@ class GraphWindow(QWidget):
                 self._x_combo.addItem(label, ch)
                 self._y_combo.addItem(label, ch)
 
-            # Determine Smart Defaults
-            default_x = "FSC-A"
-            default_y = "SSC-A"
+            # Determine Smart Defaults - Default to globally active parameters
+            default_x = self._state.active_x_param if hasattr(self._state, 'active_x_param') else "FSC-A"
+            default_y = self._state.active_y_param if hasattr(self._state, 'active_y_param') else "SSC-A"
 
             if self._node_id:
                 node = sample.gate_tree.find_node_by_id(self._node_id)
@@ -299,36 +344,33 @@ class GraphWindow(QWidget):
         x_label = get_channel_marker_label(fcs, x_ch)
         y_label = get_channel_marker_label(fcs, y_ch)
 
-        # Do one-time T detection if linear
-        if self._x_scale.transform_type == TransformType.LINEAR and x_ch in events.columns:
-            self._x_scale.logicle_t = detect_logicle_top(events[x_ch].values)
-        if self._y_scale.transform_type == TransformType.LINEAR and y_ch in events.columns:
-            self._y_scale.logicle_t = detect_logicle_top(events[y_ch].values)
+        # Do one-time T detection and fallback bounds computation
+        # We MUST clone the scale state so we don't accidentally cache gated auto-ranges globally
+        x_scale_active = self._x_scale.copy()
+        y_scale_active = self._y_scale.copy()
 
-        # FlowJo Auto-Zoom: If we are viewing a gated subset, tighten the limits
-        if is_gated and len(events) > 0:
-            import numpy as np
-            raw_events = sample.fcs_data.events
+        if x_scale_active.transform_type == TransformType.LINEAR and x_ch in events.columns:
+            x_scale_active.logicle_t = detect_logicle_top(events[x_ch].values)
+        if y_scale_active.transform_type == TransformType.LINEAR and y_ch in events.columns:
+            y_scale_active.logicle_t = detect_logicle_top(events[y_ch].values)
+            
+        if x_scale_active.min_val is None or x_scale_active.max_val is None:
             if x_ch in events.columns:
-                p1, p99 = np.percentile(events[x_ch], [1, 99])
-                margin = (p99 - p1) * 0.1
-                if margin > 0:
-                    x_min = max(float(raw_events[x_ch].min()), float(p1 - margin))
-                    x_max = min(float(raw_events[x_ch].max()), float(p99 + margin))
-                    self._x_scale.min_val = x_min
-                    self._x_scale.max_val = x_max
+                vmin, vmax = calculate_auto_range(events[x_ch].values, x_scale_active.transform_type)
+                x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
+                
+        if y_scale_active.min_val is None or y_scale_active.max_val is None:
             if y_ch in events.columns:
-                p1, p99 = np.percentile(events[y_ch], [1, 99])
-                margin = (p99 - p1) * 0.1
-                if margin > 0:
-                    y_min = max(float(raw_events[y_ch].min()), float(p1 - margin))
-                    y_max = min(float(raw_events[y_ch].max()), float(p99 + margin))
-                    self._y_scale.min_val = y_min
-                    self._y_scale.max_val = y_max
+                vmin, vmax = calculate_auto_range(events[y_ch].values, y_scale_active.transform_type)
+                y_scale_active.min_val, y_scale_active.max_val = float(vmin), float(vmax)
 
+        # (Removed auto-zoom percentile shrinkage to prevent hard-cutoff artifacts)
+
+        self._canvas.begin_update()
         self._canvas.set_axes(x_ch, y_ch, x_label, y_label)
-        self._canvas.set_scales(self._x_scale, self._y_scale)
-        self._canvas.set_data(events)
+        self._canvas.set_scales(x_scale_active, y_scale_active)
+        self._canvas.end_update()       # single redraw with correct axes+scales
+        self._canvas.set_data(events)   # final redraw with data
 
     def apply_axis_scale(self, channel_name: str, scale: AxisScale) -> None:
         """Apply an external scale setting if this graph uses that channel."""
@@ -347,16 +389,26 @@ class GraphWindow(QWidget):
             self._canvas.set_scales(self._x_scale, self._y_scale)
 
     def _on_axis_changed(self) -> None:
-        """Handle axis dropdown changes — sync global channel scales and redraw."""
+        """Handle axis dropdown changes — debounced to avoid redundant renders."""
+        # Show spinner immediately so the user knows a change was registered
+        self._render_spinner.setVisible(True)
+        # Restart the debounce timer; actual render fires after 100ms of quiet
+        self._axis_debounce.start()
+
+    def _do_axis_render(self) -> None:
+        """Perform the actual render after axis debounce fires."""
         x_ch = self._x_combo.currentData() or self._x_combo.currentText()
+        self._state.active_x_param = x_ch
         if x_ch in self._state.channel_scales:
             self._x_scale = self._state.channel_scales[x_ch].copy()
             
         y_ch = self._y_combo.currentData() or self._y_combo.currentText()
+        self._state.active_y_param = y_ch
         if y_ch in self._state.channel_scales:
             self._y_scale = self._state.channel_scales[y_ch].copy()
             
         self._render_initial()
+        self._render_spinner.setVisible(False)
         self.axis_changed.emit()
 
     def _on_mode_changed(self, index: int) -> None:
@@ -394,22 +446,21 @@ class GraphWindow(QWidget):
             parent=self,
         )
         
-        # When values change, update local and redraw
+        # When values change, update local, redraw, and implicitly sync globally
         def on_change(axis_id: str, new_scale: AxisScale):
             if axis_id == "x":
                 self._x_scale = new_scale.copy()
+                x_ch = self._x_combo.currentData() or self._x_combo.currentText()
+                self._state.channel_scales[x_ch] = self._x_scale.copy()
+                self.axis_scale_sync_requested.emit(x_ch, self._x_scale)
             else:
                 self._y_scale = new_scale.copy()
+                y_ch = self._y_combo.currentData() or self._y_combo.currentText()
+                self._state.channel_scales[y_ch] = self._y_scale.copy()
+                self.axis_scale_sync_requested.emit(y_ch, self._y_scale)
             self._canvas.set_scales(self._x_scale, self._y_scale)
             
         dlg.scale_changed.connect(on_change)
-        
-        # Auto-apply to all other samples
-        def on_apply_all(axis_id: str, scale_val: AxisScale):
-            ch_name = self._x_combo.currentText() if axis_id == "x" else self._y_combo.currentText()
-            self.axis_scale_sync_requested.emit(ch_name, scale_val)
-            
-        dlg.apply_to_all_requested.connect(on_apply_all)
         
         dlg.show()
         

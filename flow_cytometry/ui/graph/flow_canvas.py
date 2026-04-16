@@ -35,9 +35,10 @@ from matplotlib.patches import (
 )
 from matplotlib.lines import Line2D
 from matplotlib import colormaps
+from fast_histogram import histogram2d as fast_hist2d
 
-from PyQt6.QtCore import pyqtSignal, QTimer
-from PyQt6.QtWidgets import QSizePolicy
+from PyQt6.QtCore import pyqtSignal, QTimer, Qt
+from PyQt6.QtWidgets import QSizePolicy, QLabel
 
 from biopro.ui.theme import Colors
 
@@ -147,7 +148,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             matplotlib.rcParams[key] = val
 
         self._fig = Figure(figsize=(6, 5), dpi=100)
-        self._fig.set_facecolor(Colors.BG_DARKEST)
+        self._fig.set_facecolor(_PLOT_BG)
         super().__init__(self._fig)
 
         self.setParent(parent)
@@ -159,6 +160,10 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._ax = self._fig.add_subplot(111)
         self._ax.set_facecolor(_PLOT_BG)
         self._ax.grid(True, color="#B0B0B0", alpha=0.35, linewidth=0.5)
+
+        # Set fixed subplot margins once — avoids calling tight_layout()
+        # which inspects every artist and crashes with non-standard ones.
+        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
 
         # ── Data state ────────────────────────────────────────────────
         self._current_data: Optional[pd.DataFrame] = None
@@ -203,13 +208,49 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._cid_motion = self.mpl_connect("motion_notify_event", self._on_motion)
         self._cid_dblclick = self.mpl_connect("button_press_event", self._on_dblclick)
 
+        # ── Loading overlay ───────────────────────────────────────────
+        # A translucent label that sits on top of the canvas to signal
+        # that a render is in progress.  Positioned in resizeEvent.
+        self._loading_label = QLabel("  ⟳  Rendering…  ", self)
+        self._loading_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._loading_label.setStyleSheet(
+            "background: rgba(18, 18, 30, 200);"
+            "color: #58a6ff;"
+            "font-size: 13px;"
+            "font-weight: 600;"
+            "border-radius: 8px;"
+            "padding: 6px 14px;"
+        )
+        self._loading_label.setVisible(False)
+        self._loading_label.raise_()
+
         # Show empty state
         self._show_empty()
+
+    def mouseDoubleClickEvent(self, event) -> None:
+        """Intercept double clicks to prevent macOS fullscreen tearing.
+        
+        On macOS, QMainWindow interprets unhandled double-clicks as a
+        title-bar toggle, dropping the app out of full screen. By explicitly
+        accepting the event after Matplotlib processes it, we stop the
+        bubbling.
+        """
+        super().mouseDoubleClickEvent(event)
+        event.accept()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
         if getattr(self, "_dirty", False):
             self.redraw()
+
+    def resizeEvent(self, event) -> None:
+        """Keep the loading overlay centered over the canvas."""
+        super().resizeEvent(event)
+        if hasattr(self, "_loading_label"):
+            lw, lh = 160, 36
+            x = (self.width() - lw) // 2
+            y = (self.height() - lh) // 2
+            self._loading_label.setGeometry(x, y, lw, lh)
 
     # ── coordinate mapping ────────────────────────────────────────────
 
@@ -333,16 +374,58 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._selected_gate_id = gate_id
         self._render_gate_layer()
 
+    # ── Batch update ───────────────────────────────────────────────
+
+    def begin_update(self) -> None:
+        """Start a batch update — suppress intermediate redraws."""
+        self._batch_update = True
+
+    def end_update(self) -> None:
+        """End batch — perform a single redraw with final state."""
+        self._batch_update = False
+        self.redraw()
+
     def redraw(self) -> None:
         """Full redraw: render data layer (expensive) + gate layer (cheap)."""
+        if getattr(self, '_batch_update', False):
+            return
+
         if not self.isVisible():
             self._dirty = True
             return
 
         self._dirty = False
         self._bg_cache = None  # invalidate cache
-        self._render_data_layer()
+        self._show_loading()
+        try:
+            self._render_data_layer()
+        except Exception as exc:
+            logger.exception("Canvas render failed: %s", exc)
+            self._show_error(f"Render error: {exc}")
+        finally:
+            # Always hide the overlay — even if the render crashed.
+            self._hide_loading()
         self._render_gate_layer()
+
+    def _show_loading(self) -> None:
+        """Show the loading overlay, keeping it on top."""
+        if hasattr(self, "_loading_label"):
+            # Re-center in case we haven't had a resizeEvent yet
+            lw, lh = 160, 36
+            x = max(0, (self.width() - lw) // 2)
+            y = max(0, (self.height() - lh) // 2)
+            self._loading_label.setGeometry(x, y, lw, lh)
+            self._loading_label.setVisible(True)
+            self._loading_label.raise_()
+            # Force Qt to process the show so the label appears before the
+            # blocking matplotlib render begins.
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+
+    def _hide_loading(self) -> None:
+        """Hide the loading overlay."""
+        if hasattr(self, "_loading_label"):
+            self._loading_label.setVisible(False)
 
     def _render_data_layer(self) -> None:
         """Render the expensive scatter/histogram data.
@@ -351,6 +434,9 @@ class FlowCanvas(FigureCanvasQTAgg):
         overlays can be drawn on top without re-rendering data.
         """
         self._ax.clear()
+        # ax.clear() resets facecolor to rcParams default, but re-apply
+        # explicitly so the white plot background is always consistent.
+        self._ax.set_facecolor(_PLOT_BG)
         self._gate_patches.clear()
         self._edit_handles.clear()
         self._gate_artists.clear()
@@ -401,7 +487,40 @@ class FlowCanvas(FigureCanvasQTAgg):
         x_data = apply_transform(x_raw, self._x_scale.transform_type, **x_kwargs)
         y_data = apply_transform(y_raw, self._y_scale.transform_type, **y_kwargs)
 
-        # Draw based on mode
+        # 1. Establish stable axis limits BEFORE rendering.
+        # If the user has set explicit min/max, honour them.
+        # Otherwise, derive stable limits from the data's P0.5–P99.5 in
+        # display-space.  Using percentiles (not matplotlib auto-margins)
+        # gives the same view every render regardless of jitter.
+        if self._x_scale.min_val is not None and self._x_scale.max_val is not None:
+            x_lim = apply_transform(
+                np.array([self._x_scale.min_val, self._x_scale.max_val]),
+                self._x_scale.transform_type, **x_kwargs,
+            )
+            self._ax.set_xlim(x_lim[0], x_lim[1])
+        else:
+            valid_x = x_data[np.isfinite(x_data)]
+            if len(valid_x) > 0:
+                self._ax.set_xlim(
+                    np.percentile(valid_x, 0.1),
+                    np.percentile(valid_x, 99.9),
+                )
+
+        if self._y_scale.min_val is not None and self._y_scale.max_val is not None:
+            y_lim = apply_transform(
+                np.array([self._y_scale.min_val, self._y_scale.max_val]),
+                self._y_scale.transform_type, **y_kwargs,
+            )
+            self._ax.set_ylim(y_lim[0], y_lim[1])
+        else:
+            valid_y = y_data[np.isfinite(y_data)]
+            if len(valid_y) > 0:
+                self._ax.set_ylim(
+                    np.percentile(valid_y, 0.1),
+                    np.percentile(valid_y, 99.9),
+                )
+
+        # 2. Draw based on mode using the established limits
         if self._display_mode == DisplayMode.DOT_PLOT:
             self._draw_dot(x_data, y_data)
         elif self._display_mode == DisplayMode.PSEUDOCOLOR:
@@ -428,23 +547,8 @@ class FlowCanvas(FigureCanvasQTAgg):
             alpha=0.8,
         )
 
-        # Set explicit limits if configured, else auto-margin
-        if self._x_scale.min_val is not None and self._x_scale.max_val is not None:
-            x_lim = apply_transform(np.array([self._x_scale.min_val, self._x_scale.max_val]), 
-                                    self._x_scale.transform_type, **x_kwargs)
-            self._ax.set_xlim(x_lim[0], x_lim[1])
-        else:
-            self._ax.margins(x=0.02)
-            
-        if self._y_scale.min_val is not None and self._y_scale.max_val is not None:
-            y_lim = apply_transform(np.array([self._y_scale.min_val, self._y_scale.max_val]), 
-                                    self._y_scale.transform_type, **y_kwargs)
-            self._ax.set_ylim(y_lim[0], y_lim[1])
-        else:
-            self._ax.margins(y=0.02)
-
         self._ax.grid(True, color="#B0B0B0", alpha=0.35, linewidth=0.5)
-        self._fig.tight_layout(pad=1.5)
+        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
         self.draw()  # flush to Qt so we can snapshot
 
         # Cache the bitmap of the data layer
@@ -454,23 +558,60 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._bg_cache = None
 
     def _apply_axis_formatting(self) -> None:
-        """Apply biological decade formatting to axes if transformed."""
+        """Apply biological decade formatting to axes if transformed.
+        
+        For biexponential axes with negative decades (A > 0 or min_val < 0),
+        negative ticks (-10³, -10², 0, 10², …) are added to give the classic
+        FlowJo-style display.
+        """
         from matplotlib.ticker import FixedLocator, FixedFormatter
         
-        # Standard flow cytometry decades
-        raw_ticks = np.array([0, 10**2, 10**3, 10**4, 10**5, 10**6])
-        labels = ["0", "$10^2$", "$10^3$", "$10^4$", "$10^5$", "$10^6$"]
-        
         if self._x_scale.transform_type != TransformType.LINEAR:
+            raw_ticks, labels = self._build_bio_ticks(
+                self._x_scale, self._x_scale.transform_type == TransformType.BIEXPONENTIAL
+            )
             disp_ticks = self._transform_x(raw_ticks)
             self._ax.xaxis.set_major_locator(FixedLocator(disp_ticks))
             self._ax.xaxis.set_major_formatter(FixedFormatter(labels))
             
         if self._display_mode not in (DisplayMode.HISTOGRAM, DisplayMode.CDF):
             if self._y_scale.transform_type != TransformType.LINEAR:
+                raw_ticks, labels = self._build_bio_ticks(
+                    self._y_scale, self._y_scale.transform_type == TransformType.BIEXPONENTIAL
+                )
                 disp_ticks = self._transform_y(raw_ticks)
                 self._ax.yaxis.set_major_locator(FixedLocator(disp_ticks))
                 self._ax.yaxis.set_major_formatter(FixedFormatter(labels))
+
+    def _build_bio_ticks(
+        self, scale: "AxisScale", is_biex: bool
+    ) -> tuple[np.ndarray, list[str]]:
+        """Build biologically-sensible tick positions and labels.
+        
+        For biexponential: adds negative decades when A > 0 or min_val < 0.
+        For log: positive decades only.
+        """
+        pos_decades = [10**2, 10**3, 10**4, 10**5, 10**6]
+        pos_labels  = ["$10^2$", "$10^3$", "$10^4$", "$10^5$", "$10^6$"]
+        
+        if is_biex:
+            # Decide whether to show negative side
+            show_neg = scale.logicle_a > 0 or (scale.min_val is not None and scale.min_val < 0)
+            
+            if show_neg:
+                neg_decades = [-10**3, -10**2]
+                neg_labels  = ["-$10^3$", "-$10^2$"]
+                raw = np.array(neg_decades + [0] + pos_decades, dtype=float)
+                lbl = neg_labels + ["0"] + pos_labels
+            else:
+                raw = np.array([0] + pos_decades, dtype=float)
+                lbl = ["0"] + pos_labels
+        else:
+            # Log: no zero or negatives possible
+            raw = np.array(pos_decades, dtype=float)
+            lbl = pos_labels
+        
+        return raw, lbl
 
     def _render_gate_layer(self) -> None:
         """Draw gate overlays on top of the cached data layer.
@@ -481,7 +622,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         for artist in self._gate_artists:
             try:
                 artist.remove()
-            except (ValueError, AttributeError):
+            except (ValueError, AttributeError, NotImplementedError):
                 pass
         self._gate_artists.clear()
         self._gate_patches.clear()
@@ -515,7 +656,18 @@ class FlowCanvas(FigureCanvasQTAgg):
         )
 
     def _draw_pseudocolor(self, x: np.ndarray, y: np.ndarray) -> None:
-        """True density-colored scatter plot — FlowJo classic mode."""
+        """FlowJo-style pseudocolor — density-colored per-event dot plot.
+
+        Hybrid algorithm (visual fidelity + performance):
+        1. Build 256×256 density grid via fast_histogram + gaussian_filter.
+        2. Look up per-event local density (numpy indexing, O(N)).
+        3. Inverse-density subsampling:
+             sparse events (→ density 0)   → kept ~100%  (individually visible)
+             dense  events (→ density max)  → kept ~3%    (they overlap anyway)
+           Globally scaled so total rendered points ≤ MAX_SCATTER (100k).
+           Fixed RNG seed (42) → identical render every pass → stable nav.
+        4. Single rasterized scatter() with per-dot turbo coloring (blue→red).
+        """
         valid = np.isfinite(x) & np.isfinite(y)
         x, y = x[valid], y[valid]
 
@@ -523,55 +675,69 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._draw_dot(x, y)
             return
 
-        # Use explicitly set limits if available, otherwise compute from data bounds
-        if self._x_scale.min_val is not None and self._x_scale.max_val is not None:
-            x_kwargs = {
-                "top": self._x_scale.logicle_t, "width": self._x_scale.logicle_w,
-                "positive": self._x_scale.logicle_m, "negative": self._x_scale.logicle_a,
-            } if self._x_scale.transform_type == TransformType.BIEXPONENTIAL else {}
-            x_lim = apply_transform(np.array([self._x_scale.min_val, self._x_scale.max_val]), self._x_scale.transform_type, **x_kwargs)
-            x_min, x_max = x_lim[0], x_lim[1]
-        else:
-            x_min, x_max = x.min(), x.max()
-            
-        if self._y_scale.min_val is not None and self._y_scale.max_val is not None:
-            y_kwargs = {
-                "top": self._y_scale.logicle_t, "width": self._y_scale.logicle_w,
-                "positive": self._y_scale.logicle_m, "negative": self._y_scale.logicle_a,
-            } if self._y_scale.transform_type == TransformType.BIEXPONENTIAL else {}
-            y_lim = apply_transform(np.array([self._y_scale.min_val, self._y_scale.max_val]), self._y_scale.transform_type, **y_kwargs)
-            y_min, y_max = y_lim[0], y_lim[1]
-        else:
-            y_min, y_max = y.min(), y.max()
+        x_lo, x_hi = self._ax.get_xlim()
+        y_lo, y_hi = self._ax.get_ylim()
 
-        # Build 256x256 bounding histogram for fast density lookup
-        bins = (256, 256)
-        hist, x_edges, y_edges = np.histogram2d(x, y, bins=bins, range=[[x_min, x_max], [y_min, y_max]])
-        
-        # Apply slight smoothing to the density calculation so FlowJo color gradients look organic
-        # rather than harshly discretized
+        # Clip to visible range — prevents edge-bin accumulation artefacts
+        in_range = (x >= x_lo) & (x <= x_hi) & (y >= y_lo) & (y <= y_hi)
+        x_vis, y_vis = x[in_range], y[in_range]
+
+        if len(x_vis) < 10:
+            self._draw_dot(x, y)
+            return
+
+        # ── Density estimation ─────────────────────────────────────────
         from scipy.ndimage import gaussian_filter
-        hist = gaussian_filter(hist, sigma=1.5)
-        
-        # Look up bin index for each point (clip to ensure no out of bounds)
-        x_i = np.clip(np.searchsorted(x_edges, x, side="right") - 1, 0, bins[0] - 1)
-        y_i = np.clip(np.searchsorted(y_edges, y, side="right") - 1, 0, bins[1] - 1)
-        
-        # Extract density mapped values
-        densities = hist[x_i, y_i]
-
-        # Sort points by density so densest are plotted on top
-        sort_idx = np.argsort(densities)
-        x_sorted = x[sort_idx]
-        y_sorted = y[sort_idx]
-        densities_sorted = densities[sort_idx]
-
-        # Plot as a true point scatter.
-        # Use a soft-edge larger size with alpha for the premium density map feel
-        self._ax.scatter(
-            x_sorted, y_sorted, c=densities_sorted, 
-            cmap="turbo", s=3, alpha=0.8, edgecolors="none", rasterized=True
+        n_bins = 256
+        H = fast_hist2d(
+            y_vis, x_vis,
+            range=[[y_lo, y_hi], [x_lo, x_hi]],
+            bins=n_bins,
         )
+        H_smooth = gaussian_filter(H.astype(np.float64), sigma=2.0)
+
+        # ── Per-event density lookup ────────────────────────────────────
+        x_idx = np.clip(((x_vis - x_lo) / (x_hi - x_lo) * n_bins).astype(int), 0, n_bins - 1)
+        y_idx = np.clip(((y_vis - y_lo) / (y_hi - y_lo) * n_bins).astype(int), 0, n_bins - 1)
+        densities = H_smooth[y_idx, x_idx]
+        d_max = densities.max()
+        densities_norm = densities / d_max if d_max > 0 else densities
+
+        # ── Inverse-density subsampling ─────────────────────────────────
+        MAX_SCATTER = 100_000
+        MIN_PROB    = 0.03
+        keep_prob = MIN_PROB + (1.0 - MIN_PROB) * (1.0 - densities_norm)
+        expected_total = keep_prob.sum()
+        if expected_total > MAX_SCATTER:
+            keep_prob *= MAX_SCATTER / expected_total
+
+        rng = np.random.default_rng(42)   # fixed seed → stable renders
+        keep_mask = rng.random(len(x_vis)) < keep_prob
+
+        x_plot = x_vis[keep_mask]
+        y_plot = y_vis[keep_mask]
+        c_plot = densities_norm[keep_mask]
+
+        if len(x_plot) == 0:
+            return
+
+        # ── Single rasterized scatter ───────────────────────────────────
+        from matplotlib import colormaps
+        self._ax.scatter(
+            x_plot, y_plot,
+            c=c_plot,
+            cmap=colormaps['turbo'],
+            vmin=0.0,
+            vmax=1.0,
+            s=1.5,
+            alpha=0.8,
+            edgecolors='none',
+            linewidths=0,
+            rasterized=True,
+        )
+
+        self._ax.set_xlim(x_lo, x_hi)
+        self._ax.set_ylim(y_lo, y_hi)
 
     def _draw_contour(self, x: np.ndarray, y: np.ndarray) -> None:
         """Contour density plot using 2D histogram."""
@@ -680,8 +846,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             fontsize=8,
             color=Colors.FG_DISABLED,
         )
-
-        self._fig.tight_layout(pad=1.5)
+        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
         self.draw()
 
     def _draw_cdf(self, x: np.ndarray) -> None:
@@ -708,8 +873,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         )
         self._ax.set_xlabel(self._x_label, fontsize=9, color=Colors.FG_SECONDARY)
         self._ax.set_ylabel("CDF", fontsize=9, color=Colors.FG_SECONDARY)
-
-        self._fig.tight_layout(pad=1.5)
+        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
         self.draw()
 
     # ── Gate overlay rendering ────────────────────────────────────────
@@ -732,9 +896,9 @@ class FlowCanvas(FigureCanvasQTAgg):
             is_selected = (gate.gate_id == self._selected_gate_id)
             color = _GATE_PALETTE[i % len(_GATE_PALETTE)]
             edge_color = _GATE_SELECTED_EDGE if is_selected else color
-            lw = 2.5 if is_selected else _GATE_LINEWIDTH
+            lw = 3.0 if is_selected else max(_GATE_LINEWIDTH * 0.5, 0.8)
             
-            fill_alpha = _GATE_SELECTED_ALPHA if is_selected else _GATE_ALPHA
+            fill_alpha = _GATE_SELECTED_ALPHA if is_selected else max(_GATE_ALPHA * 0.2, 0.05)
             
             # Find all nodes sharing this gate to determine style and labels
             sharing_nodes = [n for n in self._gate_nodes if n.gate and n.gate.gate_id == gate.gate_id]
@@ -1212,7 +1376,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         if self._rubber_band_patch is not None:
             try:
                 self._rubber_band_patch.remove()
-            except ValueError:
+            except (ValueError, AttributeError, NotImplementedError):
                 pass
             self._rubber_band_patch = None
 
@@ -1271,13 +1435,13 @@ class FlowCanvas(FigureCanvasQTAgg):
         for artist in self._polygon_marker_lines:
             try:
                 artist.remove()
-            except ValueError:
+            except (ValueError, AttributeError, NotImplementedError):
                 pass
         self._polygon_marker_lines.clear()
         if self._closing_line is not None:
             try:
                 self._closing_line.remove()
-            except ValueError:
+            except (ValueError, AttributeError, NotImplementedError):
                 pass
             self._closing_line = None
 
@@ -1340,7 +1504,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         if self._instruction_text is not None:
             try:
                 self._instruction_text.remove()
-            except ValueError:
+            except (ValueError, AttributeError, NotImplementedError):
                 pass
             self._instruction_text = None
             self.draw_idle()
@@ -1362,7 +1526,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         )
         self._ax.set_xticks([])
         self._ax.set_yticks([])
-        self._fig.tight_layout()
+        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
         self.draw()
 
     def _show_error(self, msg: str) -> None:

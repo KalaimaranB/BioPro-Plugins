@@ -164,6 +164,7 @@ class WorkspaceRibbon(QWidget):
                     fcs_data=fcs_data,
                     role=SampleRole.OTHER,
                     markers=[m for m in fcs_data.markers if m],
+                    is_compensated=fcs_data.is_compensated,
                 )
                 self._state.experiment.add_sample(sample)
                 loaded_count += 1

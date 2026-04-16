@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Callable, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -57,6 +57,13 @@ class AxisTransformPanel(QWidget):
         self._auto_range_callback = auto_range_callback
         
         self._updating_ui = False
+
+        # Debounce: only fire scale_changed after 150ms of no slider activity.
+        # This prevents a full canvas redraw on every individual slider tick.
+        self._change_timer = QTimer(self)
+        self._change_timer.setSingleShot(True)
+        self._change_timer.setInterval(150)
+        self._change_timer.timeout.connect(self.scale_changed)
         
         self._setup_ui()
         self._load_from_scale()
@@ -164,9 +171,23 @@ class AxisTransformPanel(QWidget):
         logicle_layout = QVBoxLayout(self._logicle_box)
         logicle_layout.setContentsMargins(0, 0, 0, 0)
         
-        lbl_logicle = QLabel("Biexponential Parameters")
+        lbl_logicle = QLabel("Biexponential (Logicle) Parameters")
         lbl_logicle.setStyleSheet(f"color: {Colors.FG_SECONDARY}; font-weight: bold;")
         logicle_layout.addWidget(lbl_logicle)
+        
+        # Short explainer
+        lbl_hint = QLabel(
+            "T: instrument max value (sets positive ceiling)\n"
+            "W: linearization width around 0 (compress/expand near-zero)\n"
+            "M: total positive decades shown (e.g. 4.5 = up to ~10⁴·⁵)\n"
+            "A: extra negative decades (0 = no negatives shown)"
+        )
+        lbl_hint.setStyleSheet(
+            f"color: {Colors.FG_DISABLED}; font-size: 10px; "
+            f"background: {Colors.BG_DARKEST}; padding: 4px; border-radius: 4px;"
+        )
+        lbl_hint.setWordWrap(True)
+        logicle_layout.addWidget(lbl_hint)
         
         form_logicle = QFormLayout()
         form_logicle.setContentsMargins(0, 8, 0, 0)
@@ -174,23 +195,44 @@ class AxisTransformPanel(QWidget):
         # Top (T)
         self._top_input = QLineEdit()
         self._top_input.setValidator(QDoubleValidator())
+        self._top_input.setToolTip(
+            "T — Instrument maximum value.\n"
+            "Typical values: 262144 (18-bit), 1048576 (20-bit).\n"
+            "Auto-Range will set this from the data."
+        )
         self._top_input.textChanged.connect(self._on_logicle_changed)
         form_logicle.addRow("Top (T):", self._top_input)
         
         # Width Basis (W) slider
         self._slider_w, self._lbl_w = self._add_slider_row(
-            form_logicle, "Width Basis (W):", 0, 50, self._on_w_slider
+            form_logicle, "Width (W):", 0, 50, self._on_w_slider,
+            tooltip="W — Width of the linear region around 0.\n"
+                    "Higher = more events near 0 shown in linear scale.\n"
+                    "Typical: 0.5. Try 1.0–2.0 if events cluster at 0."
         )
         
         # Positive Decades (M) slider
         self._slider_m, self._lbl_m = self._add_slider_row(
-            form_logicle, "Positive (M):", 20, 60, self._on_m_slider
+            form_logicle, "Decades (M):", 20, 60, self._on_m_slider,
+            tooltip="M — Total positive decades displayed.\n"
+                    "4.5 = shows up to ~10^4.5 on the positive side.\n"
+                    "Typical: 4.5. Use 5.0 for very bright populations."
         )
         
         # Extra Negative Decades (A) slider
         self._slider_a, self._lbl_a = self._add_slider_row(
-            form_logicle, "Extra Negative (A):", 0, 30, self._on_a_slider
+            form_logicle, "Neg. Decades (A):", 0, 30, self._on_a_slider,
+            tooltip="A — Additional decades shown BELOW zero.\n"
+                    "0 = axis starts at 0 (no negative events shown).\n"
+                    "Set to 0.5–1.0 to display over-compensated negative events."
         )
+        
+        # Reset defaults button
+        btn_reset = QPushButton("Reset to Defaults")
+        self._style_button(btn_reset)
+        btn_reset.setToolTip("Restore W=0.5, M=4.5, A=0.0 (standard logicle defaults)")
+        btn_reset.clicked.connect(self._on_reset_logicle_defaults)
+        form_logicle.addRow("", btn_reset)
         
         logicle_layout.addLayout(form_logicle)
         layout.addWidget(self._logicle_box)
@@ -198,12 +240,15 @@ class AxisTransformPanel(QWidget):
         layout.addStretch()
 
     def _add_slider_row(
-        self, form: QFormLayout, label: str, min_val: int, max_val: int, callback
+        self, form: QFormLayout, label: str, min_val: int, max_val: int,
+        callback, tooltip: str = ""
     ) -> tuple[QSlider, QLabel]:
         slider = QSlider(Qt.Orientation.Horizontal)
         slider.setMinimum(min_val)
         slider.setMaximum(max_val)
         slider.valueChanged.connect(callback)
+        if tooltip:
+            slider.setToolTip(tooltip)
         
         val_label = QLabel("0.0")
         val_label.setFixedWidth(30)
@@ -267,8 +312,10 @@ class AxisTransformPanel(QWidget):
         self._updating_ui = False
 
     def _emit_change(self) -> None:
+        """Schedule a debounced scale_changed emission."""
         if not self._updating_ui:
-            self.scale_changed.emit()
+            # Restart the 150ms debounce window on every change
+            self._change_timer.start()
 
     # ── Event Handlers ────────────────────────────────────────────────
 
@@ -287,8 +334,22 @@ class AxisTransformPanel(QWidget):
         if rng:
             self._scale.min_val = rng[0]
             self._scale.max_val = rng[1]
+            # For biex, also recalculate T from the data maximum
+            if self._scale.transform_type == TransformType.BIEXPONENTIAL:
+                data_max = rng[1]
+                if data_max > 1e6:
+                    self._scale.logicle_t = max(16777216.0, data_max * 1.25)
+                elif data_max > 2e5:
+                    self._scale.logicle_t = max(262144.0, data_max * 1.25)
+                elif data_max > 5e4:
+                    self._scale.logicle_t = 65536.0
+                else:
+                    self._scale.logicle_t = max(10000.0, data_max * 2.0)
             self._load_from_scale()
-            self._emit_change()
+            # Auto-range fires immediately (deliberate user action, not slider drag)
+            self._change_timer.stop()
+            if not self._updating_ui:
+                self.scale_changed.emit()
 
     def _on_limits_changed(self) -> None:
         if self._updating_ui:
@@ -360,6 +421,16 @@ class AxisTransformPanel(QWidget):
             self._scale.logicle_a = float_val
             self._emit_change()
 
+    def _on_reset_logicle_defaults(self) -> None:
+        """Reset W, M, A to standard logicle defaults."""
+        self._scale.logicle_w = 0.5
+        self._scale.logicle_m = 4.5
+        self._scale.logicle_a = 0.0
+        self._load_from_scale()
+        self._change_timer.stop()
+        if not self._updating_ui:
+            self.scale_changed.emit()
+
 
 class TransformDialog(QDialog):
     """Dialog housing multi-axis scaling configuration panels.
@@ -415,20 +486,14 @@ class TransformDialog(QDialog):
         sep.setStyleSheet(f"background: {Colors.BORDER};")
         layout.addWidget(sep)
         
-        lbl_hint = QLabel("Note: Scale changes instantly update the active plot.")
+        lbl_hint = QLabel(
+            "Scale settings are synchronized natively.\n"
+            "Changes immediately affect all samples mapping this channel."
+        )
         lbl_hint.setStyleSheet(f"color: {Colors.FG_DISABLED}; font-size: {Fonts.SIZE_SMALL}px; font-style: italic;")
         lbl_hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        lbl_hint.setWordWrap(True)
         layout.addWidget(lbl_hint)
-        
-        btn_apply = QPushButton("Sync Active Tab to Entire Group")
-        btn_apply.setToolTip("Pushes the currently active tab's settings to ALL other samples.")
-        btn_apply.setStyleSheet(
-            f"QPushButton {{ background: {Colors.ACCENT_PRIMARY}; color: {Colors.BG_DARKEST};"
-            f" border: none; border-radius: 4px; padding: 6px; font-weight: bold; }}"
-            f"QPushButton:hover {{ background: #58a6ff; }}"
-        )
-        btn_apply.clicked.connect(self._on_apply_all)
-        layout.addWidget(btn_apply)
 
     @property
     def x_scale(self) -> AxisScale:
@@ -437,10 +502,3 @@ class TransformDialog(QDialog):
     @property
     def y_scale(self) -> AxisScale:
         return self._y_panel.scale
-
-    def _on_apply_all(self) -> None:
-        active_idx = self._tabs.currentIndex()
-        if active_idx == 0:
-            self.apply_to_all_requested.emit('x', self.x_scale)
-        else:
-            self.apply_to_all_requested.emit('y', self.y_scale)

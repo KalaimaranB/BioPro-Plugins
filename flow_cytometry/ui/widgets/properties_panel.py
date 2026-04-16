@@ -51,7 +51,7 @@ class PropertiesPanel(QWidget):
         self._state = state
         self._controller = controller
         self._current_sample_id: Optional[str] = None
-        self._current_gate_id: Optional[str] = None
+        self._current_node_id: Optional[str] = None
         self._setup_ui()
 
     def _setup_ui(self) -> None:
@@ -347,19 +347,19 @@ class PropertiesPanel(QWidget):
     def _on_negate_toggled(self, negated: bool) -> None:
         """Handle negation toggle at the node level."""
         if self._current_sample_id and self._current_node_id:
-            self._controller.modify_gate(
-                None, self._current_sample_id, node_id=self._current_node_id, negated=negated
-            )
+            sample = self._state.experiment.samples.get(self._current_sample_id)
+            if sample:
+                node = sample.gate_tree.find_node_by_id(self._current_node_id)
+                if node and node.gate:
+                    self._controller.modify_gate(
+                        node.gate.gate_id, self._current_sample_id, negated=negated
+                    )
 
     def _on_split_clicked(self) -> None:
         if self._current_sample_id and self._current_node_id:
             self._controller.split_population(
                 self._current_node_id, self._current_sample_id
             )
-
-    def refresh(self) -> None:
-        """Force a redraw of the current state."""
-        self.show_sample_properties(self._current_sample_id, self._current_node_id)
 
     def _count_gates(self, node) -> int:
         """Count total gates in a tree (excluding root)."""

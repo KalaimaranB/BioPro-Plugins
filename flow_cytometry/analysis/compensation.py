@@ -202,7 +202,7 @@ def extract_spill_from_fcs(data: FCSData) -> Optional[CompensationMatrix]:
         A :class:`CompensationMatrix` if found, or None.
     """
     spill_str = None
-    for key in ("$SPILLOVER", "$SPILL", "SPILL", "SPILLOVER"):
+    for key in ("$SPILLOVER", "$SPILL", "SPILLOVER", "SPILL", "spill", "spillover"):
         if key in data.metadata:
             spill_str = data.metadata[key]
             break
