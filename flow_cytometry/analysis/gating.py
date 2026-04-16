@@ -15,6 +15,8 @@ Adaptive gate support:
 from __future__ import annotations
 
 import logging
+from .transforms import apply_transform
+from .scaling import AxisScale
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -159,46 +161,108 @@ class RectangleGate(Gate):
 
 
 class PolygonGate(Gate):
-    """Polygon gate defined by a list of (x, y) vertices.
-
-    Uses matplotlib's ``Path.contains_points`` for hit-testing.
-
-    Attributes:
-        vertices: List of (x, y) tuples defining the polygon boundary.
-    """
-
     def __init__(
-        self,
-        x_param: str,
-        y_param: str,
-        *,
-        vertices: Optional[list[tuple[float, float]]] = None,
+        self, 
+        x_param: str, 
+        y_param: str, 
+        vertices: list[tuple[float, float]], 
+        x_scale=None,       # FIX: Default to None to support legacy saved gates
+        y_scale=None,       # FIX: Default to None to support legacy saved gates
+        name: str = "Polygon Gate",
         adaptive: bool = False,
-        gate_id: Optional[str] = None,
-    ) -> None:
-        super().__init__(
-            x_param, y_param,
-            adaptive=adaptive, gate_id=gate_id
-        )
-        self.vertices = vertices or []
+        gate_id: str = None,
+        **kwargs
+    ):
+        super().__init__(x_param, y_param, adaptive=adaptive, gate_id=gate_id)
+        self.name = name
+        self.vertices = vertices
+        
+        from .scaling import AxisScale
+        from .transforms import TransformType
+        
+        # Bulletproof deserialization that handles missing data gracefully
+        def parse_scale(s):
+            if s is None:
+                # Mock a basic linear scale if missing
+                class DummyScale: pass
+                d = DummyScale()
+                d.transform_type = "linear"
+                return d
+            if isinstance(s, dict):
+                sc = dict(s)
+                tt = sc.get('transform_type')
+                if isinstance(tt, str):
+                    for e in TransformType:
+                        if str(e.value).lower() == tt.lower() or e.name.lower() == tt.lower():
+                            sc['transform_type'] = e
+                            break
+                try:
+                    return AxisScale(**sc)
+                except Exception:
+                    pass
+            return s
+            
+        self.x_scale = parse_scale(x_scale)
+        self.y_scale = parse_scale(y_scale)
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
-        if len(self.vertices) < 3:
-            return np.zeros(len(events), dtype=bool)
+        from .transforms import apply_transform, TransformType
+        from matplotlib.path import Path
+        import numpy as np
 
-        from matplotlib.path import Path as MplPath
+        x_raw = events[self.x_param].values
+        y_raw = events[self.y_param].values
+        vx_raw = np.array([v[0] for v in self.vertices])
+        vy_raw = np.array([v[1] for v in self.vertices])
 
-        x = events[self.x_param].values
-        y = events[self.y_param].values
-        points = np.column_stack([x, y])
-        path = MplPath(self.vertices)
-        return path.contains_points(points)
+        def resolve_enum(t_val):
+            if isinstance(t_val, str):
+                for e in TransformType:
+                    if str(e.value).lower() == t_val.lower() or e.name.lower() == t_val.lower():
+                        return e
+            return t_val
+
+        x_type = resolve_enum(getattr(self.x_scale, 'transform_type', 'linear'))
+        y_type = resolve_enum(getattr(self.y_scale, 'transform_type', 'linear'))
+
+        x_kwargs = {
+            "top": getattr(self.x_scale, 'logicle_t', 262144), 
+            "width": getattr(self.x_scale, 'logicle_w', 0.5),
+            "positive": getattr(self.x_scale, 'logicle_m', 4.5), 
+            "negative": getattr(self.x_scale, 'logicle_a', 0.0),
+        } if "biexp" in str(x_type).lower() else {}
+
+        y_kwargs = {
+            "top": getattr(self.y_scale, 'logicle_t', 262144), 
+            "width": getattr(self.y_scale, 'logicle_w', 0.5),
+            "positive": getattr(self.y_scale, 'logicle_m', 4.5), 
+            "negative": getattr(self.y_scale, 'logicle_a', 0.0),
+        } if "biexp" in str(y_type).lower() else {}
+
+        x_trans = apply_transform(x_raw, x_type, **x_kwargs)
+        y_trans = apply_transform(y_raw, y_type, **y_kwargs)
+        
+        vx_trans = apply_transform(vx_raw, x_type, **x_kwargs)
+        vy_trans = apply_transform(vy_raw, y_type, **y_kwargs)
+
+        points = np.column_stack((x_trans, y_trans))
+        display_path = Path(np.column_stack((vx_trans, vy_trans)))
+        return display_path.contains_points(points)
 
     def to_dict(self) -> dict:
         d = super().to_dict()
         d["vertices"] = [list(v) for v in self.vertices]
-        return d
+        
+        # FIX: Extract Enum values to raw strings so JSON history doesn't crash
+        def safe_scale_dict(scale_obj):
+            sd = scale_obj.to_dict() if hasattr(scale_obj, 'to_dict') else dict(getattr(scale_obj, '__dict__', {}))
+            if 'transform_type' in sd and hasattr(sd['transform_type'], 'value'):
+                sd['transform_type'] = str(sd['transform_type'].value) # Strip Enum
+            return sd
 
+        d["x_scale"] = safe_scale_dict(self.x_scale)
+        d["y_scale"] = safe_scale_dict(self.y_scale)
+        return d
 
 class EllipseGate(Gate):
     """Elliptical gate defined by center, semi-axes, and rotation.

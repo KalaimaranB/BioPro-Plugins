@@ -54,6 +54,8 @@ from ...analysis.gating import (
     GateNode,
 )
 
+from ...analysis.scaling import AxisScale, calculate_auto_range # ADD THIS IMPORT
+
 logger = logging.getLogger(__name__)
 
 
@@ -484,14 +486,11 @@ class FlowCanvas(FigureCanvasQTAgg):
             "negative": self._y_scale.logicle_a,
         } if self._y_scale.transform_type == TransformType.BIEXPONENTIAL else {}
 
+        # ... 
         x_data = apply_transform(x_raw, self._x_scale.transform_type, **x_kwargs)
         y_data = apply_transform(y_raw, self._y_scale.transform_type, **y_kwargs)
 
         # 1. Establish stable axis limits BEFORE rendering.
-        # If the user has set explicit min/max, honour them.
-        # Otherwise, derive stable limits from the data's P0.5–P99.5 in
-        # display-space.  Using percentiles (not matplotlib auto-margins)
-        # gives the same view every render regardless of jitter.
         if self._x_scale.min_val is not None and self._x_scale.max_val is not None:
             x_lim = apply_transform(
                 np.array([self._x_scale.min_val, self._x_scale.max_val]),
@@ -499,12 +498,15 @@ class FlowCanvas(FigureCanvasQTAgg):
             )
             self._ax.set_xlim(x_lim[0], x_lim[1])
         else:
-            valid_x = x_data[np.isfinite(x_data)]
-            if len(valid_x) > 0:
-                self._ax.set_xlim(
-                    np.percentile(valid_x, 0.1),
-                    np.percentile(valid_x, 99.9),
+            # FIX: Calculate boundaries using RAW data, then transform the limits
+            valid_x_raw = x_raw[np.isfinite(x_raw)]
+            if len(valid_x_raw) > 0:
+                raw_min, raw_max = calculate_auto_range(valid_x_raw, self._x_scale.transform_type)
+                x_lim = apply_transform(
+                    np.array([raw_min, raw_max]), 
+                    self._x_scale.transform_type, **x_kwargs
                 )
+                self._ax.set_xlim(x_lim[0], x_lim[1])
 
         if self._y_scale.min_val is not None and self._y_scale.max_val is not None:
             y_lim = apply_transform(
@@ -513,12 +515,15 @@ class FlowCanvas(FigureCanvasQTAgg):
             )
             self._ax.set_ylim(y_lim[0], y_lim[1])
         else:
-            valid_y = y_data[np.isfinite(y_data)]
-            if len(valid_y) > 0:
-                self._ax.set_ylim(
-                    np.percentile(valid_y, 0.1),
-                    np.percentile(valid_y, 99.9),
+            # FIX: Calculate boundaries using RAW data, then transform the limits
+            valid_y_raw = y_raw[np.isfinite(y_raw)]
+            if len(valid_y_raw) > 0:
+                raw_min, raw_max = calculate_auto_range(valid_y_raw, self._y_scale.transform_type)
+                y_lim = apply_transform(
+                    np.array([raw_min, raw_max]), 
+                    self._y_scale.transform_type, **y_kwargs
                 )
+                self._ax.set_ylim(y_lim[0], y_lim[1])
 
         # 2. Draw based on mode using the established limits
         if self._display_mode == DisplayMode.DOT_PLOT:
@@ -669,24 +674,23 @@ class FlowCanvas(FigureCanvasQTAgg):
         4. Single rasterized scatter() with per-dot turbo coloring (blue→red).
         """
         valid = np.isfinite(x) & np.isfinite(y)
-        x, y = x[valid], y[valid]
+        x_vis, y_vis = x[valid], y[valid]
 
-        if len(x) < 10 or np.ptp(x) == 0 or np.ptp(y) == 0:
-            self._draw_dot(x, y)
+        if len(x_vis) < 10:
+            self._draw_dot(x_vis, y_vis)
             return
 
         x_lo, x_hi = self._ax.get_xlim()
         y_lo, y_hi = self._ax.get_ylim()
 
-        # Clip to visible range — prevents edge-bin accumulation artefacts
-        in_range = (x >= x_lo) & (x <= x_hi) & (y >= y_lo) & (y <= y_hi)
-        x_vis, y_vis = x[in_range], y[in_range]
+        # 1. Uniform Subsampling (Preserves population ratios)
+        MAX_SCATTER = 100_000
+        if len(x_vis) > MAX_SCATTER:
+            rng = np.random.default_rng(42)
+            idx = rng.choice(len(x_vis), MAX_SCATTER, replace=False)
+            x_vis, y_vis = x_vis[idx], y_vis[idx]
 
-        if len(x_vis) < 10:
-            self._draw_dot(x, y)
-            return
-
-        # ── Density estimation ─────────────────────────────────────────
+        # 2. Density estimation
         from scipy.ndimage import gaussian_filter
         n_bins = 256
         H = fast_hist2d(
@@ -696,32 +700,22 @@ class FlowCanvas(FigureCanvasQTAgg):
         )
         H_smooth = gaussian_filter(H.astype(np.float64), sigma=2.0)
 
-        # ── Per-event density lookup ────────────────────────────────────
+        # 3. Lookup per-event density
         x_idx = np.clip(((x_vis - x_lo) / (x_hi - x_lo) * n_bins).astype(int), 0, n_bins - 1)
         y_idx = np.clip(((y_vis - y_lo) / (y_hi - y_lo) * n_bins).astype(int), 0, n_bins - 1)
         densities = H_smooth[y_idx, x_idx]
+
         d_max = densities.max()
-        densities_norm = densities / d_max if d_max > 0 else densities
+        c_plot = densities / d_max if d_max > 0 else densities
 
-        # ── Inverse-density subsampling ─────────────────────────────────
-        MAX_SCATTER = 100_000
-        MIN_PROB    = 0.03
-        keep_prob = MIN_PROB + (1.0 - MIN_PROB) * (1.0 - densities_norm)
-        expected_total = keep_prob.sum()
-        if expected_total > MAX_SCATTER:
-            keep_prob *= MAX_SCATTER / expected_total
+        # 4. Z-Sorting (Crucial!)
+        # Sort so high-density points are plotted LAST, sitting on top of the noise
+        sort_idx = np.argsort(c_plot)
+        x_plot = x_vis[sort_idx]
+        y_plot = y_vis[sort_idx]
+        c_plot = c_plot[sort_idx]
 
-        rng = np.random.default_rng(42)   # fixed seed → stable renders
-        keep_mask = rng.random(len(x_vis)) < keep_prob
-
-        x_plot = x_vis[keep_mask]
-        y_plot = y_vis[keep_mask]
-        c_plot = densities_norm[keep_mask]
-
-        if len(x_plot) == 0:
-            return
-
-        # ── Single rasterized scatter ───────────────────────────────────
+        # 5. Render
         from matplotlib import colormaps
         self._ax.scatter(
             x_plot, y_plot,
@@ -1291,10 +1285,14 @@ class FlowCanvas(FigureCanvasQTAgg):
         pts_y = self._inverse_transform_y(np.array([v[1] for v in self._polygon_vertices]))
         raw_vertices = list(zip(pts_x, pts_y))
         
+        display_vertices = list(self._polygon_vertices)
+        
         gate = PolygonGate(
             x_param=self._x_param,
             y_param=self._y_param,
-            vertices=raw_vertices,
+            vertices=display_vertices,
+            x_scale=self._x_scale.copy(), 
+            y_scale=self._y_scale.copy(),
         )
         self._polygon_vertices.clear()
         self._clear_polygon_progress()
