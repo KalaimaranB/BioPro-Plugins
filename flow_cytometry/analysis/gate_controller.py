@@ -58,6 +58,7 @@ class GateController(QObject):
 
     gate_added = pyqtSignal(str, str)        # sample_id, node_id
     gate_removed = pyqtSignal(str, str)      # sample_id, node_id
+    gate_renamed = pyqtSignal(str, str)      # sample_id, node_id
     gate_stats_updated = pyqtSignal(str, str)  # sample_id, node_id
     all_stats_updated = pyqtSignal(str)      # sample_id
     propagation_requested = pyqtSignal(str, str)  # gate_id, source_sample_id
@@ -179,6 +180,8 @@ class GateController(QObject):
                 x_max=xmax,
                 y_min=ymin,
                 y_max=ymax,
+                x_scale=gate.x_scale,
+                y_scale=gate.y_scale,
             )
             child_node = quad_node.add_child(child_gate, name=name)
             self._compute_node_stats(child_node, sample)
@@ -299,6 +302,7 @@ class GateController(QObject):
             return False
 
         node.name = new_name
+        self.gate_renamed.emit(sample_id, node_id)
         self.gate_stats_updated.emit(sample_id, node_id)
         
         # Always trigger propagation on rename to ensure names persist across samples.

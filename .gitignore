@@ -7,3 +7,4 @@ installed.json
 flow_implementation_plan.md
 memory_context/
 *.log
+.aider*

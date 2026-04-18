@@ -46,23 +46,23 @@ class AxisScale:
             logicle_a=self.logicle_a,
         )
 
+    def to_dict(self) -> dict:
+        """Serialize to a JSON-compatible dictionary."""
+        return {
+            "transform_type": self.transform_type.value,
+            "min_val": self.min_val,
+            "max_val": self.max_val,
+            "logicle_t": self.logicle_t,
+            "logicle_w": self.logicle_w,
+            "logicle_m": self.logicle_m,
+            "logicle_a": self.logicle_a,
+        }
+
 
 def calculate_auto_range(
     data: np.ndarray, transform_type: TransformType
 ) -> tuple[float, float]:
-    """Calculate a robust display range ignoring extreme outliers.
-
-    Flow cytometry data often contains extreme outliers (e.g., electronic
-    noise or debris) that squish the main populations if standard min/max
-    is used.
-
-    Args:
-        data:           Raw data array for a single channel.
-        transform_type: The applied transform.
-
-    Returns:
-        A tuple of (min_val, max_val).
-    """
+    """Calculate a robust display range ignoring extreme outliers."""
     if len(data) == 0:
         return (0.0, 1.0)
         
@@ -72,33 +72,38 @@ def calculate_auto_range(
     if len(valid_data) == 0:
         return (0.0, 1.0)
 
-    # Use robust percentiles to ignore the extreme tails
     if transform_type == TransformType.LINEAR:
-        # Linear: enforce 0 bound if it's typical positive scatter
         p_min = np.percentile(valid_data, 0.1)
-        p_max = np.percentile(valid_data, 99.9)
+        
+        # THE FIX: Find a robust high percentile to ignore 262k noise peg-outs
+        p99_5 = np.percentile(valid_data, 99.5)
+        
+        # Add 10% padding so we don't slice the top of the diffuse populations
+        p_max = p99_5 * 1.1
+        
+        # Cap it at the absolute max just in case the data is perfectly distributed
+        p_max = min(p_max, valid_data.max())
         
         # If the biological data is all mostly positive (FSC/SSC), ensure 0 is in frame
         if p_min > 0 and p_min < p_max * 0.1:
             p_min = 0.0
             
         rng = max(p_max - p_min, 1e-6)
-        # Pad 2% on top, 0% on bottom if bottom is 0
         bottom_pad = 0.0 if p_min == 0.0 else rng * 0.02
+        
         return (p_min - bottom_pad, p_max + rng * 0.02)
         
     elif transform_type == TransformType.LOG:
-        # Log: purely driven by positive data bounds
+        # ... (keep existing log code)
         pos_data = valid_data[valid_data > 0]
         if len(pos_data) == 0:
             return (0.1, 10.0)
         p_min = np.percentile(pos_data, 0.1)
         p_max = np.percentile(valid_data, 99.9)
-        # Add half a decade of visual padding
         return (p_min * 0.5, p_max * 2.0)
         
     elif transform_type == TransformType.BIEXPONENTIAL:
-        # Biex: natively handles negatives.
+        # ... (keep existing biexponential code)
         p_min = np.percentile(valid_data, 0.1)
         p_max = np.percentile(valid_data, 99.9)
         range_val = abs(p_max - p_min)
@@ -107,7 +112,6 @@ def calculate_auto_range(
         return (p_min - pad_bottom, p_max + pad_top)
         
     else:
-        # Fallback
         return (valid_data.min(), valid_data.max())
 
 def detect_logicle_top(data: np.ndarray) -> float:

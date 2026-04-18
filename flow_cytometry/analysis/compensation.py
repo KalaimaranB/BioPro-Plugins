@@ -328,7 +328,7 @@ def apply_compensation(
     sub_matrix = comp.inverse[np.ix_(idx, idx)]
 
     raw = df[present].values
-    compensated = raw @ sub_matrix.T
+    compensated = raw @ sub_matrix
     df[present] = compensated
 
     return df

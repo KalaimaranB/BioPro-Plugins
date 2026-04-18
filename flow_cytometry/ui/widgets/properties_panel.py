@@ -341,7 +341,7 @@ class PropertiesPanel(QWidget):
     def _on_name_changed(self, new_name: str) -> None:
         if self._current_sample_id and self._current_node_id:
             self._controller.rename_population(
-                self._current_node_id, self._current_sample_id, new_name
+                self._current_sample_id, self._current_node_id, new_name
             )
 
     def _on_negate_toggled(self, negated: bool) -> None:
@@ -358,7 +358,7 @@ class PropertiesPanel(QWidget):
     def _on_split_clicked(self) -> None:
         if self._current_sample_id and self._current_node_id:
             self._controller.split_population(
-                self._current_node_id, self._current_sample_id
+                self._current_sample_id, self._current_node_id
             )
 
     def _count_gates(self, node) -> int:

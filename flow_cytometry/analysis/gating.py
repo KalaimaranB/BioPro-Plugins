@@ -15,8 +15,14 @@ Adaptive gate support:
 from __future__ import annotations
 
 import logging
-from .transforms import apply_transform, invert_transform
+from .transforms import apply_transform, invert_transform, TransformType
 from .scaling import AxisScale
+from ._utils import (
+    ScaleFactory,
+    TransformTypeResolver,
+    BiexponentialParameters,
+    ScaleSerializer,
+)
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -119,9 +125,16 @@ class Gate(ABC):
 class RectangleGate(Gate):
     """Rectangular (2-D) or range (1-D) gate defined by min/max bounds.
 
+    Bounds are stored in **raw data space**. The ``contains()`` method
+    projects both events and bounds into display space using the axis
+    scales before comparison, ensuring the gate remains correct on all
+    axis types (linear, log, biexponential).
+
     Attributes:
-        x_min, x_max: X-axis bounds.
-        y_min, y_max: Y-axis bounds (ignored if ``y_param`` is None).
+        x_min, x_max: X-axis bounds in raw data space.
+        y_min, y_max: Y-axis bounds in raw data space (ignored if ``y_param`` is None).
+        x_scale:      Axis scale for X parameter (drives transform type).
+        y_scale:      Axis scale for Y parameter.
     """
 
     def __init__(
@@ -135,6 +148,8 @@ class RectangleGate(Gate):
         y_max: float = np.inf,
         adaptive: bool = False,
         gate_id: Optional[str] = None,
+        x_scale=None,
+        y_scale=None,
     ) -> None:
         super().__init__(
             x_param, y_param,
@@ -144,134 +159,149 @@ class RectangleGate(Gate):
         self.x_max = x_max
         self.y_min = y_min
         self.y_max = y_max
+        self.x_scale = ScaleFactory.parse(x_scale)
+        self.y_scale = ScaleFactory.parse(y_scale)
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
-        x = events[self.x_param].values
-        mask = (x >= self.x_min) & (x <= self.x_max)
+        """Test which events fall inside this rectangle.
+
+        Both raw event values and raw-space bounds are projected into
+        display space using the same forward transform before comparison.
+        This keeps the gate boundary correct regardless of axis scale type.
+        """
+        x_raw = events[self.x_param].values
+        bounds_x_raw = np.array([self.x_min, self.x_max])
+        
+        x_type = TransformTypeResolver.resolve(
+            getattr(self.x_scale, "transform_type", "linear")
+        )
+        x_kwargs = (BiexponentialParameters(self.x_scale).to_dict()
+                    if x_type == TransformType.BIEXPONENTIAL else {})
+
+        # Project X to display space
+        x_disp = apply_transform(x_raw, x_type, **x_kwargs)
+        bounds_x_disp = apply_transform(bounds_x_raw, x_type, **x_kwargs)
+        x_min_disp, x_max_disp = bounds_x_disp[0], bounds_x_disp[1]
+
+        mask = (x_disp >= x_min_disp) & (x_disp <= x_max_disp)
+
+        # Apply Y constraint if present
         if self.y_param and self.y_param in events.columns:
-            y = events[self.y_param].values
-            mask &= (y >= self.y_min) & (y <= self.y_max)
+            y_raw = events[self.y_param].values
+            bounds_y_raw = np.array([self.y_min, self.y_max])
+
+            y_type = TransformTypeResolver.resolve(
+                getattr(self.y_scale, "transform_type", "linear")
+            )
+            y_kwargs = (BiexponentialParameters(self.y_scale).to_dict()
+                        if y_type == TransformType.BIEXPONENTIAL else {})
+
+            y_disp = apply_transform(y_raw, y_type, **y_kwargs)
+            bounds_y_disp = apply_transform(bounds_y_raw, y_type, **y_kwargs)
+            y_min_disp, y_max_disp = bounds_y_disp[0], bounds_y_disp[1]
+
+            mask &= (y_disp >= y_min_disp) & (y_disp <= y_max_disp)
+
         return mask
 
     def to_dict(self) -> dict:
         d = super().to_dict()
         d.update(x_min=self.x_min, x_max=self.x_max,
                  y_min=self.y_min, y_max=self.y_max)
+        d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
+        d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
 
 
 class PolygonGate(Gate):
+    """Polygonal gate defined by an ordered list of vertices.
+
+    Vertices are stored in **raw data space** (same coordinate frame as
+    RectangleGate bounds).  ``contains()`` projects both event values and
+    vertices into display space using the axis scale before the
+    point-in-polygon test, so the gate boundary remains correct on log
+    and biexponential axes.
+
+    Attributes:
+        vertices: Ordered ``[(x, y), ...]`` pairs in raw data space.
+        x_scale:  Axis scale for the X parameter (drives transform type).
+        y_scale:  Axis scale for the Y parameter.
+    """
+
     def __init__(
-        self, 
-        x_param: str, 
-        y_param: str, 
-        vertices: list[tuple[float, float]], 
-        x_scale=None,       # FIX: Default to None to support legacy saved gates
-        y_scale=None,       # FIX: Default to None to support legacy saved gates
+        self,
+        x_param: str,
+        y_param: str,
+        vertices: list[tuple[float, float]],
+        x_scale=None,
+        y_scale=None,
         name: str = "Polygon Gate",
         adaptive: bool = False,
         gate_id: str = None,
-        **kwargs
+        **kwargs,
     ):
         super().__init__(x_param, y_param, adaptive=adaptive, gate_id=gate_id)
         self.name = name
         self.vertices = vertices
-        
-        from .scaling import AxisScale
-        from .transforms import TransformType
-        
-        # Bulletproof deserialization that handles missing data gracefully
-        def parse_scale(s):
-            if s is None:
-                # Mock a basic linear scale if missing
-                class DummyScale: pass
-                d = DummyScale()
-                d.transform_type = "linear"
-                return d
-            if isinstance(s, dict):
-                sc = dict(s)
-                tt = sc.get('transform_type')
-                if isinstance(tt, str):
-                    for e in TransformType:
-                        if str(e.value).lower() == tt.lower() or e.name.lower() == tt.lower():
-                            sc['transform_type'] = e
-                            break
-                try:
-                    return AxisScale(**sc)
-                except Exception:
-                    pass
-            return s
-            
-        self.x_scale = parse_scale(x_scale)
-        self.y_scale = parse_scale(y_scale)
+        self.x_scale = ScaleFactory.parse(x_scale)
+        self.y_scale = ScaleFactory.parse(y_scale)
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
-        from .transforms import apply_transform, invert_transform, TransformType
-        from matplotlib.path import Path
-        import numpy as np
+        """Test which events fall inside this polygon gate.
 
+        Both the raw event values and the raw-space vertices are projected
+        into display space using the same forward transform before the
+        point-in-polygon test.  This keeps the gate shape visually correct
+        regardless of the axis scale type.
+        """
+        from matplotlib.path import Path
+        
         x_raw = events[self.x_param].values
         y_raw = events[self.y_param].values
         vx_raw = np.array([v[0] for v in self.vertices])
         vy_raw = np.array([v[1] for v in self.vertices])
 
-        def resolve_enum(t_val):
-            if isinstance(t_val, str):
-                for e in TransformType:
-                    if str(e.value).lower() == t_val.lower() or e.name.lower() == t_val.lower():
-                        return e
-            return t_val
+        x_type = TransformTypeResolver.resolve(
+            getattr(self.x_scale, "transform_type", "linear")
+        )
+        y_type = TransformTypeResolver.resolve(
+            getattr(self.y_scale, "transform_type", "linear")
+        )
 
-        x_type = resolve_enum(getattr(self.x_scale, 'transform_type', 'linear'))
-        y_type = resolve_enum(getattr(self.y_scale, 'transform_type', 'linear'))
+        x_kwargs = (BiexponentialParameters(self.x_scale).to_dict()
+                    if x_type == TransformType.BIEXPONENTIAL else {})
+        y_kwargs = (BiexponentialParameters(self.y_scale).to_dict()
+                    if y_type == TransformType.BIEXPONENTIAL else {})
 
-        x_kwargs = {
-            "top": getattr(self.x_scale, 'logicle_t', 262144), 
-            "width": getattr(self.x_scale, 'logicle_w', 0.5),
-            "positive": getattr(self.x_scale, 'logicle_m', 4.5), 
-            "negative": getattr(self.x_scale, 'logicle_a', 0.0),
-        } if "biexp" in str(x_type).lower() else {}
+        # Project events into display space
+        x_disp = apply_transform(x_raw, x_type, **x_kwargs)
+        y_disp = apply_transform(y_raw, y_type, **y_kwargs)
 
-        y_kwargs = {
-            "top": getattr(self.y_scale, 'logicle_t', 262144), 
-            "width": getattr(self.y_scale, 'logicle_w', 0.5),
-            "positive": getattr(self.y_scale, 'logicle_m', 4.5), 
-            "negative": getattr(self.y_scale, 'logicle_a', 0.0),
-        } if "biexp" in str(y_type).lower() else {}
+        # Project raw-space vertices into the same display space
+        vx_disp = apply_transform(vx_raw, x_type, **x_kwargs)
+        vy_disp = apply_transform(vy_raw, y_type, **y_kwargs)
 
-        x_trans = apply_transform(x_raw, x_type, **x_kwargs)
-        y_trans = apply_transform(y_raw, y_type, **y_kwargs)
-        
-        vx_trans = apply_transform(vx_raw, x_type, **x_kwargs)
-        vy_trans = apply_transform(vy_raw, y_type, **y_kwargs)
-
-        points = np.column_stack((x_trans, y_trans))
-        display_path = Path(np.column_stack((vx_trans, vy_trans)))
-        return display_path.contains_points(points)
+        points = np.column_stack((x_disp, y_disp))
+        poly_path = Path(np.column_stack((vx_disp, vy_disp)))
+        return poly_path.contains_points(points)
 
     def to_dict(self) -> dict:
         d = super().to_dict()
         d["vertices"] = [list(v) for v in self.vertices]
-        
-        # FIX: Extract Enum values to raw strings so JSON history doesn't crash
-        def safe_scale_dict(scale_obj):
-            sd = scale_obj.to_dict() if hasattr(scale_obj, 'to_dict') else dict(getattr(scale_obj, '__dict__', {}))
-            if 'transform_type' in sd and hasattr(sd['transform_type'], 'value'):
-                sd['transform_type'] = str(sd['transform_type'].value) # Strip Enum
-            return sd
-
-        d["x_scale"] = safe_scale_dict(self.x_scale)
-        d["y_scale"] = safe_scale_dict(self.y_scale)
+        d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
+        d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
 
 class EllipseGate(Gate):
     """Elliptical gate defined by center, semi-axes, and rotation.
 
     Attributes:
-        center:   (cx, cy) center of the ellipse.
-        width:    Semi-axis length along X (before rotation).
-        height:   Semi-axis length along Y (before rotation).
+        center:   (cx, cy) center of the ellipse in raw data space.
+        width:    Semi-axis length along X (before rotation) in raw data space.
+        height:   Semi-axis length along Y (before rotation) in raw data space.
         angle:    Rotation angle in degrees (counter-clockwise).
+        x_scale:  Axis scale for X parameter (drives transform type).
+        y_scale:  Axis scale for Y parameter.
     """
 
     def __init__(
@@ -285,6 +315,8 @@ class EllipseGate(Gate):
         angle: float = 0.0,
         adaptive: bool = False,
         gate_id: Optional[str] = None,
+        x_scale=None,
+        y_scale=None,
     ) -> None:
         super().__init__(
             x_param, y_param,
@@ -294,34 +326,80 @@ class EllipseGate(Gate):
         self.width = width
         self.height = height
         self.angle = angle
+        self.x_scale = ScaleFactory.parse(x_scale)
+        self.y_scale = ScaleFactory.parse(y_scale)
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
-        x = events[self.x_param].values - self.center[0]
-        y = events[self.y_param].values - self.center[1]
+        """Test which events fall inside this ellipse.
 
+        Both raw event values and raw-space center/axes are projected
+        into display space using the same forward transform before
+        the ellipse containment test. This keeps the gate boundary
+        correct regardless of axis scale type.
+        """
+        x_raw = events[self.x_param].values
+        y_raw = events[self.y_param].values
+        cx_raw = self.center[0]
+        cy_raw = self.center[1]
+
+        x_type = TransformTypeResolver.resolve(
+            getattr(self.x_scale, "transform_type", "linear")
+        )
+        y_type = TransformTypeResolver.resolve(
+            getattr(self.y_scale, "transform_type", "linear")
+        )
+
+        x_kwargs = (BiexponentialParameters(self.x_scale).to_dict()
+                    if x_type == TransformType.BIEXPONENTIAL else {})
+        y_kwargs = (BiexponentialParameters(self.y_scale).to_dict()
+                    if y_type == TransformType.BIEXPONENTIAL else {})
+
+        # Project events and center to display space
+        x_disp = apply_transform(x_raw, x_type, **x_kwargs)
+        y_disp = apply_transform(y_raw, y_type, **y_kwargs)
+        cx_disp = apply_transform(np.array([cx_raw]), x_type, **x_kwargs)[0]
+        cy_disp = apply_transform(np.array([cy_raw]), y_type, **y_kwargs)[0]
+
+        # Project axis endpoints to get semi-axes lengths in display space
+        x_plus_w_disp = apply_transform(np.array([cx_raw + self.width]), x_type, **x_kwargs)[0]
+        y_plus_h_disp = apply_transform(np.array([cy_raw + self.height]), y_type, **y_kwargs)[0]
+        width_disp = abs(x_plus_w_disp - cx_disp)
+        height_disp = abs(y_plus_h_disp - cy_disp)
+
+        # Translate to center
+        x_centered = x_disp - cx_disp
+        y_centered = y_disp - cy_disp
+
+        # Rotate
         theta = np.radians(self.angle)
         cos_t, sin_t = np.cos(theta), np.sin(theta)
+        x_rot = cos_t * x_centered + sin_t * y_centered
+        y_rot = -sin_t * x_centered + cos_t * y_centered
 
-        x_rot = cos_t * x + sin_t * y
-        y_rot = -sin_t * x + cos_t * y
-
-        return (x_rot / self.width) ** 2 + (y_rot / self.height) ** 2 <= 1.0
+        # Ellipse containment test
+        return (x_rot / width_disp) ** 2 + (y_rot / height_disp) ** 2 <= 1.0
 
     def to_dict(self) -> dict:
         d = super().to_dict()
         d.update(center=list(self.center), width=self.width,
                  height=self.height, angle=self.angle)
+        d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
+        d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
 
 
 class QuadrantGate(Gate):
     """Quadrant gate — divides the plot into 4 regions at (x_mid, y_mid).
 
-    Produces four sub-populations: Q1 (++), Q2 (-+), Q3 (--), Q4 (+-).
+    Produces four sub-populations: Q1 (++), Q2 (-+), Q3 (--), Q4 (+-). Both
+    the mid-point and the containment test apply axis transforms to ensure
+    correct behavior on all axis types.
 
     Attributes:
-        x_mid: X-axis division point.
-        y_mid: Y-axis division point.
+        x_mid:    X-axis division point in raw data space.
+        y_mid:    Y-axis division point in raw data space.
+        x_scale:  Axis scale for X parameter (drives transform type).
+        y_scale:  Axis scale for Y parameter.
     """
 
     def __init__(
@@ -333,6 +411,8 @@ class QuadrantGate(Gate):
         y_mid: float = 0.0,
         adaptive: bool = False,
         gate_id: Optional[str] = None,
+        x_scale=None,
+        y_scale=None,
     ) -> None:
         super().__init__(
             x_param, y_param,
@@ -340,6 +420,8 @@ class QuadrantGate(Gate):
         )
         self.x_mid = x_mid
         self.y_mid = y_mid
+        self.x_scale = ScaleFactory.parse(x_scale)
+        self.y_scale = ScaleFactory.parse(y_scale)
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Returns True for all events (the quadrant gate itself holds all).
@@ -353,41 +435,71 @@ class QuadrantGate(Gate):
     ) -> np.ndarray:
         """Return a boolean mask for a specific quadrant.
 
+        Both the division point and raw event values are projected into
+        display space using the same forward transform before comparison.
+
         Args:
             events:   Event DataFrame.
             quadrant: One of ``'Q1'`` (++), ``'Q2'`` (-+),
-                      ``'Q3'`` (--), ``'Q4'`` (+-).
+                      ``'Q3'`` (--), ``'Q4'`` (+-) or ``'Q1 ++'``, etc.
 
         Returns:
             Boolean mask array.
         """
-        x = events[self.x_param].values
-        y = events[self.y_param].values
-        if quadrant == "Q1":
-            return (x >= self.x_mid) & (y >= self.y_mid)
-        elif quadrant == "Q2":
-            return (x < self.x_mid) & (y >= self.y_mid)
-        elif quadrant == "Q3":
-            return (x < self.x_mid) & (y < self.y_mid)
-        elif quadrant == "Q4":
-            return (x >= self.x_mid) & (y < self.y_mid)
+        q = quadrant.split()[0].upper() if quadrant else quadrant
+
+        x_raw = events[self.x_param].values
+        y_raw = events[self.y_param].values
+        mid_x_raw = np.array([self.x_mid])
+        mid_y_raw = np.array([self.y_mid])
+
+        x_type = TransformTypeResolver.resolve(
+            getattr(self.x_scale, "transform_type", "linear")
+        )
+        y_type = TransformTypeResolver.resolve(
+            getattr(self.y_scale, "transform_type", "linear")
+        )
+
+        x_kwargs = (BiexponentialParameters(self.x_scale).to_dict()
+                    if x_type == TransformType.BIEXPONENTIAL else {})
+        y_kwargs = (BiexponentialParameters(self.y_scale).to_dict()
+                    if y_type == TransformType.BIEXPONENTIAL else {})
+
+        x_disp = apply_transform(x_raw, x_type, **x_kwargs)
+        y_disp = apply_transform(y_raw, y_type, **y_kwargs)
+        mid_x_disp = apply_transform(mid_x_raw, x_type, **x_kwargs)[0]
+        mid_y_disp = apply_transform(mid_y_raw, y_type, **y_kwargs)[0]
+
+        if q == "Q1":
+            return (x_disp >= mid_x_disp) & (y_disp >= mid_y_disp)
+        elif q == "Q2":
+            return (x_disp < mid_x_disp) & (y_disp >= mid_y_disp)
+        elif q == "Q3":
+            return (x_disp < mid_x_disp) & (y_disp < mid_y_disp)
+        elif q == "Q4":
+            return (x_disp >= mid_x_disp) & (y_disp < mid_y_disp)
         else:
             raise ValueError(f"Invalid quadrant: {quadrant!r}")
 
     def to_dict(self) -> dict:
         d = super().to_dict()
         d.update(x_mid=self.x_mid, y_mid=self.y_mid)
+        d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
+        d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
 
 
 class RangeGate(Gate):
     """1-D range gate (threshold or bisector) for histograms.
 
-    Defines a single boundary on one parameter.
+    Defines a single boundary on one parameter. Bounds are stored in
+    **raw data space** and transformed to display space for containment
+    testing, ensuring correct results on all axis types.
 
     Attributes:
-        low:  Lower bound.
-        high: Upper bound.
+        low:      Lower bound in raw data space.
+        high:     Upper bound in raw data space.
+        x_scale:  Axis scale for the parameter (drives transform type).
     """
 
     def __init__(
@@ -398,6 +510,7 @@ class RangeGate(Gate):
         high: float = np.inf,
         adaptive: bool = False,
         gate_id: Optional[str] = None,
+        x_scale=None,
     ) -> None:
         super().__init__(
             x_param, None,
@@ -405,14 +518,35 @@ class RangeGate(Gate):
         )
         self.low = low
         self.high = high
+        self.x_scale = ScaleFactory.parse(x_scale)
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
-        x = events[self.x_param].values
-        return (x >= self.low) & (x <= self.high)
+        """Test which events fall inside this range.
+
+        Both raw event values and raw-space bounds are projected into
+        display space using the same forward transform before comparison.
+        This keeps the gate boundary correct regardless of axis scale type.
+        """
+        x_raw = events[self.x_param].values
+        bounds_raw = np.array([self.low, self.high])
+
+        x_type = TransformTypeResolver.resolve(
+            getattr(self.x_scale, "transform_type", "linear")
+        )
+        x_kwargs = (BiexponentialParameters(self.x_scale).to_dict()
+                    if x_type == TransformType.BIEXPONENTIAL else {})
+
+        # Project to display space
+        x_disp = apply_transform(x_raw, x_type, **x_kwargs)
+        bounds_disp = apply_transform(bounds_raw, x_type, **x_kwargs)
+        low_disp, high_disp = bounds_disp[0], bounds_disp[1]
+
+        return (x_disp >= low_disp) & (x_disp <= high_disp)
 
     def to_dict(self) -> dict:
         d = super().to_dict()
         d.update(low=self.low, high=self.high)
+        d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
         return d
 
 
@@ -605,19 +739,28 @@ def gate_from_dict(data: dict) -> Gate:
         kwargs.update(x_min=data.get("x_min", -np.inf),
                       x_max=data.get("x_max", np.inf),
                       y_min=data.get("y_min", -np.inf),
-                      y_max=data.get("y_max", np.inf))
+                      y_max=data.get("y_max", np.inf),
+                      x_scale=data.get("x_scale"),
+                      y_scale=data.get("y_scale"))
     elif gate_type == "PolygonGate":
-        kwargs["vertices"] = [tuple(v) for v in data.get("vertices", [])]
+        kwargs.update(vertices=[tuple(v) for v in data.get("vertices", [])],
+                      x_scale=data.get("x_scale"),
+                      y_scale=data.get("y_scale"))
     elif gate_type == "EllipseGate":
         kwargs.update(center=tuple(data.get("center", (0, 0))),
                       width=data.get("width", 1),
                       height=data.get("height", 1),
-                      angle=data.get("angle", 0))
+                      angle=data.get("angle", 0),
+                      x_scale=data.get("x_scale"),
+                      y_scale=data.get("y_scale"))
     elif gate_type == "QuadrantGate":
         kwargs.update(x_mid=data.get("x_mid", 0),
-                      y_mid=data.get("y_mid", 0))
+                      y_mid=data.get("y_mid", 0),
+                      x_scale=data.get("x_scale"),
+                      y_scale=data.get("y_scale"))
     elif gate_type == "RangeGate":
         kwargs.update(low=data.get("low", -np.inf),
-                      high=data.get("high", np.inf))
+                      high=data.get("high", np.inf),
+                      x_scale=data.get("x_scale"))
 
     return cls(**kwargs)

@@ -293,6 +293,9 @@ class FlowCytometryPanel(QWidget):
         # ── Gate controller → UI updates ──────────────────────────────
         self._gate_controller.gate_added.connect(self._on_gate_added)
         self._gate_controller.gate_removed.connect(self._on_gate_removed)
+        self._gate_controller.gate_renamed.connect(
+            lambda sid, nid: self._gate_hierarchy.refresh()
+        )
         self._gate_controller.gate_stats_updated.connect(
             self._on_gate_stats_updated
         )

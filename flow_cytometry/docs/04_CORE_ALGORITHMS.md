@@ -65,7 +65,7 @@ Once computed, the compensation matrix $S$ is locked. How is it efficiently appl
 2. **Vector Math:**
    ```python
    raw = df[present].values
-   compensated = raw @ sub_matrix.T
+   compensated = raw @ sub_matrix
    ```
    The inner values are dumped completely out of pandas into raw optimized C-structs. The `@` operator invokes BLAS/LAPACK matrix multiplication. Rather than iterating across rows, NumPy scales the dot product across the entirety of RAM.
 
