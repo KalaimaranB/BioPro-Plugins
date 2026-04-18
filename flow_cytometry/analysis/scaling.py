@@ -103,13 +103,19 @@ def calculate_auto_range(
         return (p_min * 0.5, p_max * 2.0)
         
     elif transform_type == TransformType.BIEXPONENTIAL:
-        # ... (keep existing biexponential code)
         p_min = np.percentile(valid_data, 0.1)
         p_max = np.percentile(valid_data, 99.9)
-        range_val = abs(p_max - p_min)
-        pad_bottom = max(100.0, range_val * 0.05)
-        pad_top = max(100.0, range_val * 0.1)
-        return (p_min - pad_bottom, p_max + pad_top)
+        
+        # FLOWJO MIMIC: Force the axis limits to span the full canonical scale.
+        # FlowJo enforces a minimum bound of at least -1000 when A is active, 
+        # ensuring the 0-tick is comfortably inside the plot and equally spaced from 10^3.
+        display_min = min(p_min - 100.0, -1000.0)
+        
+        # Ensure we always show up to the standard digital ceiling (262144) 
+        # unless extreme outliers push it higher.
+        display_max = max(p_max * 1.1, 262144.0)
+        
+        return (display_min, display_max)
         
     else:
         return (valid_data.min(), valid_data.max())
@@ -151,3 +157,32 @@ def detect_logicle_top(data) -> float:
  
     # Beyond that, round up to next power of 2
     return float(2 ** int(np.ceil(np.log2(p99 * 1.1))))
+
+def estimate_logicle_params(
+    data: np.ndarray, 
+    t: float = 262144.0, 
+    m: float = 4.5
+) -> tuple[float, float]:
+    """Estimate optimal W (Width) and A (Negative decades) for the Logicle transform."""
+    valid = data[np.isfinite(data)]
+    if len(valid) == 0:
+        return 0.5, 1.0  # FIX: Default to 1 negative decade to show -10^3
+
+    r = float(np.percentile(valid, 0.1))
+    
+    # Even if data is mostly positive, enforce 1 negative decade 
+    # to match FlowJo's visual padding around the zero-tick.
+    if r >= 0:
+        return 0.5, 1.0
+
+    try:
+        w = (m - np.log10(t / abs(r))) / 2.0
+        w = max(0.1, min(w, 2.0))
+        
+        a = -np.log10(abs(r)) if r < -10.0 else 1.0
+        # FIX: Force A to be at least 1.0 to guarantee space for the -10^3 tick
+        a = max(1.0, min(a, 2.0))
+        
+        return float(w), float(a)
+    except Exception:
+        return 0.5, 1.0

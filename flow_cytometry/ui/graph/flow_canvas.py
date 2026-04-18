@@ -657,19 +657,12 @@ class FlowCanvas(FigureCanvasQTAgg):
         )
 
     def _draw_pseudocolor(self, x, y):
-        """FlowJo-style pseudocolor — density-colored per-event dot plot.
-    
-        Hybrid algorithm (visual fidelity + performance):
-        1. Build 512×512 density grid via fast_histogram + gaussian_filter.
-        512 bins (vs 256 previously) gives ~4x better resolution in the biex
-        linear region near zero, where dense populations were appearing sparse.
-        2. Look up per-event local density (numpy indexing, O(N)).
-        3. Inverse-density subsampling keeps total rendered points ≤ MAX_SCATTER.
-        4. Single rasterized scatter() with per-dot turbo coloring.
-        """
+        """FlowJo-style pseudocolor with Equal Probability and Axis Pile-up."""
         import numpy as np
         from scipy.ndimage import gaussian_filter
+        from scipy.stats import rankdata
         from matplotlib import colormaps
+        from fast_histogram import histogram2d as fast_hist2d
     
         valid = np.isfinite(x) & np.isfinite(y)
         x_vis, y_vis = x[valid], y[valid]
@@ -681,8 +674,6 @@ class FlowCanvas(FigureCanvasQTAgg):
         x_lo, x_hi = self._ax.get_xlim()
         y_lo, y_hi = self._ax.get_ylim()
     
-        # Guard against degenerate limits (can happen on first render before
-        # set_scales() is called with a proper range).
         def _safe_range(lo, hi, data, margin=0.05):
             if not (np.isfinite(lo) and np.isfinite(hi)) or hi - lo < 1e-6:
                 p1, p99 = np.percentile(data[np.isfinite(data)], [1, 99])
@@ -692,8 +683,13 @@ class FlowCanvas(FigureCanvasQTAgg):
     
         x_lo, x_hi = _safe_range(x_lo, x_hi, x_vis)
         y_lo, y_hi = _safe_range(y_lo, y_hi, y_vis)
+        
+        # FIX 1: Axis Pile-up. Force out-of-bounds data to the visual boundaries
+        # so they don't disappear from the density calculation.
+        x_vis = np.clip(x_vis, x_lo, x_hi)
+        y_vis = np.clip(y_vis, y_lo, y_hi)
     
-        # Uniform subsampling — preserves population ratios, fixed seed for stability
+        # Uniform subsampling
         MAX_SCATTER = 100_000
         if len(x_vis) > MAX_SCATTER:
             rng = np.random.default_rng(42)
@@ -701,45 +697,35 @@ class FlowCanvas(FigureCanvasQTAgg):
             x_vis, y_vis = x_vis[idx], y_vis[idx]
     
         # ── Density estimation ────────────────────────────────────────────────
-        # 512 bins gives the near-zero (biex linear) cluster ~30-60 bins of
-        # coverage instead of 8-15, making it appear dense rather than sparse.
         N_BINS = 512
-    
-        from fast_histogram import histogram2d as fast_hist2d
         H = fast_hist2d(
             y_vis, x_vis,
             range=[[y_lo, y_hi], [x_lo, x_hi]],
             bins=N_BINS,
         )
-    
-        # sigma=1.5: tighter smooth than 2.0 so adjacent clusters don't bleed
-        # into each other. The near-zero and log-region clusters should read as
-        # distinct populations, not a single blur.
         H_smooth = gaussian_filter(H.astype(np.float64), sigma=1.5)
     
         # ── Per-event density lookup ──────────────────────────────────────────
-        x_span = x_hi - x_lo
-        y_span = y_hi - y_lo
+        x_span = max(x_hi - x_lo, 1e-12)
+        y_span = max(y_hi - y_lo, 1e-12)
         x_idx = np.clip(((x_vis - x_lo) / x_span * N_BINS).astype(int), 0, N_BINS - 1)
         y_idx = np.clip(((y_vis - y_lo) / y_span * N_BINS).astype(int), 0, N_BINS - 1)
         densities = H_smooth[y_idx, x_idx]
     
-        d_max = densities.max()
-        if d_max > 0:
-            c_plot = densities / d_max
+        # FIX 2: Equal Probability (Percentile) Normalization.
+        # This converts linear density into a percentile, inflating sparse populations
+        # so they get assigned hot colors just like FlowJo does.
+        if len(densities) > 0:
+            c_plot = rankdata(densities) / len(densities)
         else:
             c_plot = densities
     
-        # ── Z-sort: dense events render on top so they're visible ────────────
+        # Z-sort: dense events render on top
         sort_idx = np.argsort(c_plot)
         x_plot = x_vis[sort_idx]
         y_plot = y_vis[sort_idx]
         c_plot_sorted = c_plot[sort_idx]
     
-        # ── Render ────────────────────────────────────────────────────────────
-        # Use a slightly larger dot size (2.0 vs 1.5) so sparse outlier events
-        # in low-density regions are still visible. Dense cores will overlap and
-        # their color will dominate regardless of size.
         self._ax.scatter(
             x_plot, y_plot,
             c=c_plot_sorted,
@@ -752,9 +738,9 @@ class FlowCanvas(FigureCanvasQTAgg):
             rasterized=True,
         )
     
-        # Re-apply limits — scatter() can expand them if outliers exist outside range
         self._ax.set_xlim(x_lo, x_hi)
         self._ax.set_ylim(y_lo, y_hi)
+
 
     def _draw_contour(self, x: np.ndarray, y: np.ndarray) -> None:
         """Contour density plot using 2D histogram."""

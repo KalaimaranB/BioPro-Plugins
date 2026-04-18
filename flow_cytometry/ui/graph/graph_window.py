@@ -35,7 +35,7 @@ from ...analysis.state import FlowState
 from ...analysis.experiment import Sample
 from ...analysis.fcs_io import get_channel_marker_label
 from ...analysis.transforms import TransformType
-from ...analysis.scaling import AxisScale, calculate_auto_range, detect_logicle_top
+from ...analysis.scaling import AxisScale, detect_logicle_top, estimate_logicle_params,calculate_auto_range
 from ...analysis.gating import Gate, GateNode
 from ..widgets.styled_combo import FlowComboBox
 from .flow_canvas import FlowCanvas, DisplayMode, GateDrawingMode
@@ -344,22 +344,34 @@ class GraphWindow(QWidget):
     
         x_ch = self._x_combo.currentData() or self._x_combo.currentText()
         y_ch = self._y_combo.currentData() or self._y_combo.currentText()
-    
+
         fcs = sample.fcs_data
         x_label = get_channel_marker_label(fcs, x_ch)
         y_label = get_channel_marker_label(fcs, y_ch)
-    
+
         # Clone scales so we don't corrupt the global channel_scales store
         x_scale_active = self._x_scale.copy()
         y_scale_active = self._y_scale.copy()
-    
-        # Detect logicle T from the *gated* events — keeps the scale appropriate
-        # for the sub-population rather than the full sample range.
-        if x_scale_active.transform_type == TransformType.LINEAR and x_ch in events.columns:
+
+        # Detect logicle T, W, and A from the *gated* events to dynamically open up the 
+        # linear region for highly negative compensated data. 
+        # (Note: Changed check from LINEAR to BIEXPONENTIAL)
+        if x_scale_active.transform_type == TransformType.BIEXPONENTIAL and x_ch in events.columns:
             x_scale_active.logicle_t = detect_logicle_top(events[x_ch].values)
-        if y_scale_active.transform_type == TransformType.LINEAR and y_ch in events.columns:
+            
+            # ── INJECT ESTIMATOR HERE ──
+            w_val, a_val = estimate_logicle_params(events[x_ch].values, t=x_scale_active.logicle_t)
+            x_scale_active.logicle_w = w_val
+            x_scale_active.logicle_a = a_val
+
+        if y_scale_active.transform_type == TransformType.BIEXPONENTIAL and y_ch in events.columns:
             y_scale_active.logicle_t = detect_logicle_top(events[y_ch].values)
-    
+            
+            # ── INJECT ESTIMATOR HERE ──
+            w_val, a_val = estimate_logicle_params(events[y_ch].values, t=y_scale_active.logicle_t)
+            y_scale_active.logicle_w = w_val
+            y_scale_active.logicle_a = a_val
+
         # ── KEY FIX ──────────────────────────────────────────────────────
         # Calculate auto-range from the GATED subset, not from full sample events.
         # When is_gated=True the events DataFrame already holds only the population
@@ -370,7 +382,7 @@ class GraphWindow(QWidget):
             if x_ch in events.columns:
                 vmin, vmax = calculate_auto_range(events[x_ch].values, x_scale_active.transform_type)
                 x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
-    
+
         if y_scale_active.min_val is None or y_scale_active.max_val is None:
             if y_ch in events.columns:
                 vmin, vmax = calculate_auto_range(events[y_ch].values, y_scale_active.transform_type)
