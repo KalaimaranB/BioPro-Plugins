@@ -114,25 +114,40 @@ def calculate_auto_range(
     else:
         return (valid_data.min(), valid_data.max())
 
-def detect_logicle_top(data: np.ndarray) -> float:
-    """Detect a sensible 'Top' (T) parameter for Logicle transform.
-    
-    FlowJo often uses 2^18 (262,144) or the maximum actual value.
+def detect_logicle_top(data) -> float:
+    """Return the Logicle T (Top) parameter for this channel's data.
+ 
+    T is the INSTRUMENT CEILING, not the data maximum.  FlowJo always
+    uses 2^18 = 262144 for modern digital cytometers regardless of what
+    the data actually reaches.  Using a lower T compresses the scale and
+    makes the near-zero cluster appear at the wrong position.
+ 
+    We still inspect the data so that:
+      - Very old 12/14-bit instruments (max ~16384) get a smaller T.
+      - Future 20-bit instruments (max ~1M) get a larger T.
+    But T is ALWAYS at least 262144 for standard 18-bit instruments.
     """
+    import numpy as np
+ 
     if len(data) == 0:
         return 262144.0
-        
+ 
     valid = np.isfinite(data)
     if not np.any(valid):
         return 262144.0
-        
-    p99 = np.percentile(data[valid], 99.99)
-    
-    # Snap to common flow cytometry instrument ranges if close
-    if p99 > 1e6:
-        return max(16777216.0, p99 * 1.2)  # 2^24
-    if p99 > 2e5:
-        return max(262144.0, p99 * 1.5)    # 2^18
-    if p99 > 5e4:
-        return 65536.0                     # 2^16
-    return max(10000.0, p99 * 2)
+ 
+    # Use 99th percentile (not 99.99) — a handful of saturated events
+    # should not inflate T unnecessarily.
+    p99 = float(np.percentile(data[valid], 99))
+ 
+    # Standard 18-bit digital cytometer — covers ~99% of all modern instruments.
+    # Always at least 262144 so the logicle scale matches FlowJo.
+    if p99 <= 262144.0:
+        return 262144.0
+ 
+    # 20-bit or amplified channels (rare, e.g. spectral systems)
+    if p99 <= 1_048_576.0:
+        return 1_048_576.0
+ 
+    # Beyond that, round up to next power of 2
+    return float(2 ** int(np.ceil(np.log2(p99 * 1.1))))

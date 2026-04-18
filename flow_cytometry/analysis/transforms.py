@@ -108,7 +108,7 @@ def biexponential_transform(
     # Apply continuous +/-0.5 uniform dithering to prevent integer banding
     # (barcode artifacts) which dramatically skew density calculations near 0
     data_jitter = np.asarray(data, dtype=np.float64).copy()
-    data_jitter += np.random.uniform(-0.5, 0.5, size=data_jitter.shape)
+    #data_jitter += np.random.uniform(-0.5, 0.5, size=data_jitter.shape)
 
     # ── Attempt 1: flowkit.transforms.LogicleTransform ────────────────
     try:

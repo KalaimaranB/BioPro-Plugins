@@ -324,53 +324,63 @@ class GraphWindow(QWidget):
         sample = self._state.experiment.samples.get(self._sample_id)
         if sample is None or sample.fcs_data is None:
             return
-
+    
         events = sample.fcs_data.events
         if events is None:
             return
-
-        # If gated, apply the population hierarchy
+    
+        # If gated, apply the population hierarchy to get the actual subset
         is_gated = False
         if self._node_id:
             node = sample.gate_tree.find_node_by_id(self._node_id)
             if node:
                 events = node.apply_hierarchy(events)
                 is_gated = True
-
+    
+        # Guard against empty gate result
+        if len(events) == 0:
+            self._canvas.set_data(events)
+            return
+    
         x_ch = self._x_combo.currentData() or self._x_combo.currentText()
         y_ch = self._y_combo.currentData() or self._y_combo.currentText()
-
+    
         fcs = sample.fcs_data
         x_label = get_channel_marker_label(fcs, x_ch)
         y_label = get_channel_marker_label(fcs, y_ch)
-
-        # Do one-time T detection and fallback bounds computation
-        # We MUST clone the scale state so we don't accidentally cache gated auto-ranges globally
+    
+        # Clone scales so we don't corrupt the global channel_scales store
         x_scale_active = self._x_scale.copy()
         y_scale_active = self._y_scale.copy()
-
+    
+        # Detect logicle T from the *gated* events — keeps the scale appropriate
+        # for the sub-population rather than the full sample range.
         if x_scale_active.transform_type == TransformType.LINEAR and x_ch in events.columns:
             x_scale_active.logicle_t = detect_logicle_top(events[x_ch].values)
         if y_scale_active.transform_type == TransformType.LINEAR and y_ch in events.columns:
             y_scale_active.logicle_t = detect_logicle_top(events[y_ch].values)
-            
+    
+        # ── KEY FIX ──────────────────────────────────────────────────────
+        # Calculate auto-range from the GATED subset, not from full sample events.
+        # When is_gated=True the events DataFrame already holds only the population
+        # that passed all parent gates, so percentile-based range detection will
+        # correctly zoom to that cluster instead of spanning the full instrument range.
+        # ─────────────────────────────────────────────────────────────────
         if x_scale_active.min_val is None or x_scale_active.max_val is None:
             if x_ch in events.columns:
                 vmin, vmax = calculate_auto_range(events[x_ch].values, x_scale_active.transform_type)
                 x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
-                
+    
         if y_scale_active.min_val is None or y_scale_active.max_val is None:
             if y_ch in events.columns:
                 vmin, vmax = calculate_auto_range(events[y_ch].values, y_scale_active.transform_type)
                 y_scale_active.min_val, y_scale_active.max_val = float(vmin), float(vmax)
-
-        # (Removed auto-zoom percentile shrinkage to prevent hard-cutoff artifacts)
-
+    
         self._canvas.begin_update()
         self._canvas.set_axes(x_ch, y_ch, x_label, y_label)
         self._canvas.set_scales(x_scale_active, y_scale_active)
         self._canvas.end_update()       # single redraw with correct axes+scales
-        self._canvas.set_data(events)   # final redraw with data
+        self._canvas.set_data(events)   # final redraw with gated data
 
     def apply_axis_scale(self, channel_name: str, scale: AxisScale) -> None:
         """Apply an external scale setting if this graph uses that channel."""
@@ -465,21 +475,22 @@ class GraphWindow(QWidget):
         dlg.show()
         
     def _calculate_auto_range(self, axis: str) -> tuple[float, float]:
-        """Compute the robust min/max for the given axis data."""
+        """Compute the robust min/max for the given axis, using gated data."""
         sample = self._state.experiment.samples.get(self._sample_id)
         if not sample or not sample.fcs_data or sample.fcs_data.events is None:
             return (0.0, 1.0)
-            
+    
         events = sample.fcs_data.events
+        # ── FIX: apply hierarchy so range matches what is displayed ──────
         if self._node_id:
             node = sample.gate_tree.find_node_by_id(self._node_id)
             if node:
                 events = node.apply_hierarchy(events)
-                
+    
         col = self._x_combo.currentData() if axis == "x" else self._y_combo.currentData()
         if not col or col not in events:
             return (0.0, 1.0)
-            
+    
         scale = self._x_scale if axis == "x" else self._y_scale
         return calculate_auto_range(events[col].values, scale.transform_type)
 
