@@ -1,7 +1,7 @@
 {
     "id": "western_blot",
     "name": "Western Blot Densitometry",
-    "version": "1.0.4",
+    "version": "1.0.5",
     "min_core_version": "1.0.3",
     "description": "Automated lane detection, band quantification, and Ponceau normalization.",
     "author": "Kalaimaran Balasothy",
@@ -15,7 +15,7 @@
         "hashes": {
             "__init__.py": "aa0efd253d793a5062e514b5681988f49da9b6c009910f5a52f84e022168c19c",
             "ui/canvas_items.py": "f368b5663d7c20c3614ba2d4be1c708d18130b6b411c29b6fb99df215ecb354b",
-            "ui/image_canvas.py": "06a3d94af47b18fb3c23d78c764ac2f7bb3009d67bb30b083ecd761f24ee2535",
+            "ui/image_canvas.py": "176f4073394679de8c9477adb0bd3940ec57207a5e33e800933db673266f1139",
             "ui/lane_profile_dialog.py": "5da7a3bf84e266da844e34b48f3298064201157123c6ec2a807ec655be970dad",
             "ui/results_widget.py": "6d790d036c07c5dd7e1fa3f19b2aeb043cb5d144619d31c7868d9108cf67544c",
             "ui/setup_screen.py": "fbc5ed01ec397bb53bb1eedc8e3e3f4b5068c659faea0b6da7bb4f18511da7dd",

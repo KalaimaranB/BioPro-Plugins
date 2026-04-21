@@ -1,7 +1,7 @@
 {
     "id": "cytometrics",
     "name": "CytoMetrics",
-    "version": "0.1.5",
+    "version": "0.1.6",
     "min_core_version": "1.0.2",
     "description": "AI-assisted multi-channel cell morphology quantification.",
     "author": "Kalaimaran Balasothy",
@@ -21,9 +21,9 @@
         ],
         "hashes": {
             "__init__.py": "a60ddcf8ef5df8aec715a13084c78f6e69b11d52cc4fc08f9038f2a104796197",
-            "ui/channel_manager.py": "4736e50a6e3848d0ca415d77bf118d2a862db3df72f5de243a2abe96645e5759",
-            "ui/image_canvas.py": "a27330c4ab86119debbdfbcc386f639254b47decf83900e4d8328bf4174dab8b",
-            "ui/main_panel.py": "4d629b6dc969752d8c2d0a69f8560da0829ac0053aea6245d3e73baa32db6e1d",
+            "ui/channel_manager.py": "74572c7106c4f92ee2a7c7f689c7e9bee76c53d2e3da0471a34b02b9a2c2ec3e",
+            "ui/image_canvas.py": "5b3eaa081a04627dd6599d249f46dcc229617ac16539cf3868f22b6e0b0b6a47",
+            "ui/main_panel.py": "ddeac0687fd7388ac6a7973fbac1971a74f4230f04c467c529fd1f763a76657f",
             "ui/workers.py": "915e2d0cf2f6d9735984ad6c16a5a5b673d141470eb29dbea59f326c5e5ddf24",
             "analysis/image_stack.py": "5c135d1e9db8fc24f353a881daddbff126cee88bb5ff96c272db4e928cc72d0f",
             "analysis/state.py": "2d09fd3454484ed5cd443beb8dfbd5e103721d550d7299e64a71588cf1c05fbb",
