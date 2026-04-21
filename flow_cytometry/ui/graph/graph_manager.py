@@ -368,6 +368,14 @@ class GraphManager(QWidget):
         for graph in self._graphs.values():
             graph._update_breadcrumb()
 
+    def cleanup(self) -> None:
+        """Explicitly release all graph resources."""
+        logger.info("Cleaning up GraphManager...")
+        # Close all tabs properly
+        while self._tabs.count() > 0:
+            self._close_tab(0)
+        self._graphs.clear()
+
     def _update_visibility(self) -> None:
         """Toggle between welcome screen and tabs."""
         has_graphs = self._tabs.count() > 0

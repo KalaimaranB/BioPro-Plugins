@@ -1,19 +1,34 @@
 # Flow Cytometry Module Documentation
 
-Welcome to the comprehensive documentation suite for the BioPro Flow Cytometry module. 
+Welcome to the documentation suite for the BioPro Flow Cytometry module. This directory contains technical and user-facing guides to help you master high-performance flow cytometry analysis.
 
-This directory contains resources tailored for both researchers using the application and developers maintaining the backend codebase.
+## 📚 Documentation Map
 
-## Documentation Index
+### 📖 User Guides (How to Use)
+1.  **[User Manual](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/01_USER_MANUAL.md)**
+    *   Guided tour of the workspace.
+    *   Step-by-step instructions for data loading, compensation, and gating.
+    *   **New**: High-fidelity rendering and image export.
+2.  **[Flow Cytometry Basics](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/04_FLOW_CYTOMETRY_BASICS.md)**
+    *   Educational guide to the "Cell to Software" pipeline.
 
-### 1. [User Guide](01_USER_GUIDE.md)
-The operational manual for scientists. Covers data loading, workflow templates, defining single-stain/FMO roles, managing compensation through the GUI, and exploring data dynamically with the visualization engine.
+### 🔬 Scientific Foundation (How it Works)
+1.  **[Technical Reference](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/00_TECHNICAL_REFERENCE.md)**
+    *   Mathematical foundations: Logicle, Compensation, Gating.
+    *   Computational logic: Rendering optimizations, Normalization, Dithering.
+    *   Detailed statistics definitions (MFI, CV, %Parent).
 
-### 2. [Mathematics](02_MATHEMATICS.md)
-The rigorous mathematical foundation of the module. Covers the definitions and usage of the Parks 2006 Logicle Transform (biexponential scaling) and the linear algebra derivations of Spillover Matrices and Inverse Compensation computation.
+### 🛠️ Developer & Architecture
+1.  **[Module Architecture](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/02_ARCHITECTURE.md)**
+    *   Software design: Internal structure and the `FlowState` model.
+    *   BioPro Core integration protocols.
+2.  **[Testing Guide](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/TESTING_GUIDE.md)**
+    *   Verification steps and automated test suite details.
 
-### 3. [Architecture](03_ARCHITECTURE.md)
-Developer documentation on the architectural design points. Covers the Unidirectional State (`FlowState`), the strict MVC separation between `ui/` widgets and `analysis/` math, the BioPro Plugin integration contract, and the dependency on the C-extended `FlowKit`.
+---
 
-### 4. [Core Algorithms](04_CORE_ALGORITHMS.md)
-Explicit, line-by-line breakdowns of the critical operations processing raw byte arrays into UI renders. Detailed explanations of Hexbin visual rendering offsets, `calculate_spillover_matrix` isolation logic, and the mechanics of applying N-dimensional subset matrices via NumPy.
+## 🔬 Core References
+
+- **Parks, D.R., et al. (2006)**. A new "Logicle" display method. *Cytometry Part A*.
+- **Roederer, M. (2001)**. Spectral compensation for flow cytometry. *Cytometry*.
+- **FlowKit Documentation**: https://github.com/whitews/FlowKit

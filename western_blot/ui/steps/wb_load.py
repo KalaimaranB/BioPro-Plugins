@@ -1,7 +1,7 @@
 """Western Blot — Step 1: Load & Preprocess."""
 
 from biopro.plugins.western_blot.ui.steps.base_load_step import BaseLoadStep
-from biopro.plugins.western_blot.ui.base import WizardPanel
+from biopro.sdk.ui import WizardPanel
 
 class WBLoadStep(BaseLoadStep):
     """Load an image and apply preprocessing (inversion, rotation, crop)."""

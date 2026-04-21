@@ -1,17 +1,36 @@
 {
-  "id": "cytometrics",
-  "name": "CytoMetrics",
-  "version": "0.1.2-beta",
-  "min_core_version": "1.0.1",
-  "description": "AI-assisted multi-channel cell morphology quantification.",
-  "author": "Kalaimaran Balasothy",
-  "icon": "🦠",
-  "entry_point": "ui.main_panel.CytoMetricsPanel",
-  "tags": [
-    "morphology",
-    "segmentation",
-    "quantification",
-    "fluorescence"
-  ],
-  "release_notes": "First release through auto release"
+    "id": "cytometrics",
+    "name": "CytoMetrics",
+    "version": "0.1.4",
+    "min_core_version": "1.0.2",
+    "description": "AI-assisted multi-channel cell morphology quantification.",
+    "author": "Kalaimaran Balasothy",
+    "icon": "\ud83e\udda0",
+    "entry_point": "ui.main_panel.CytoMetricsPanel",
+    "tags": [
+        "morphology",
+        "segmentation",
+        "quantification",
+        "fluorescence"
+    ],
+    "release_notes": "Updated system for security checks",
+    "integrity": {
+        "exclusions": [
+            "results/",
+            "exports/"
+        ],
+        "hashes": {
+            "__init__.py": "a60ddcf8ef5df8aec715a13084c78f6e69b11d52cc4fc08f9038f2a104796197",
+            "ui/channel_manager.py": "4736e50a6e3848d0ca415d77bf118d2a862db3df72f5de243a2abe96645e5759",
+            "ui/image_canvas.py": "a27330c4ab86119debbdfbcc386f639254b47decf83900e4d8328bf4174dab8b",
+            "ui/main_panel.py": "4d629b6dc969752d8c2d0a69f8560da0829ac0053aea6245d3e73baa32db6e1d",
+            "ui/workers.py": "915e2d0cf2f6d9735984ad6c16a5a5b673d141470eb29dbea59f326c5e5ddf24",
+            "analysis/image_stack.py": "5c135d1e9db8fc24f353a881daddbff126cee88bb5ff96c272db4e928cc72d0f",
+            "analysis/state.py": "2d09fd3454484ed5cd443beb8dfbd5e103721d550d7299e64a71588cf1c05fbb",
+            "analysis/pipelines/base.py": "a7ae0fafe6d785ec061c65de57b57b0efc9de9fd24845c6c47fd79e61ddc5ee4",
+            "analysis/pipelines/cellpose_pipeline.py": "b2c33af06083df023c41b19c5ee5cbc85bf5daf3f88252c73810027f7a951f1a",
+            "analysis/pipelines/otsu.py": "a1e3df78367d573b905d3b686998ed39f4ca3940442e058576234bb4eb36579d",
+            "analysis/pipelines/watershed.py": "043dce55cf50342a88d1a36bf1fae2dd40ba0c7b2a500cd44927f73d6a29f9f6"
+        }
+    }
 }

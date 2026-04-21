@@ -16,7 +16,7 @@ from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
 from biopro.ui.theme import Colors
-from biopro.plugins.western_blot.ui.base import WizardPanel
+from biopro.sdk.ui import WizardPanel
 from biopro.plugins.western_blot.ui.steps.base_bands_step import BaseBandsStep
 
 matplotlib.use("QtAgg")
@@ -298,23 +298,68 @@ class PonceauBandsStep(BaseBandsStep):
         return True
 
     def _detect_bands(self) -> None:
+        from biopro.core import task_scheduler
+        
         try:
-            self._panel.ponceau_analyzer.ref_band_indices.clear()
-            bands = self._panel.ponceau_analyzer.detect_bands(
-                min_snr=self.spin_snr.value(),
-                min_peak_distance=self.spin_min_distance.value(),
-                force_valleys_as_bands=None, 
-            )
-            n = len(bands)
-            self.lbl_status.setText(f"✅  {n} Ponceau bands detected")
-            self.lbl_status.setStyleSheet(f"color: {Colors.SUCCESS};")
-            self._panel.status_message.emit(f"Ponceau: {n} bands detected")
-            self._sync_mode(self._panel)
-            self._sync_canvas_and_history()
+            analyzer = self._panel.ponceau_analyzer
+            analyzer.ref_band_indices.clear()
+            
+            params = {
+                "min_snr": self.spin_snr.value(),
+                "min_peak_distance": self.spin_min_distance.value(),
+                "force_valleys_as_bands": None,
+            }
+            
+            # Setup background task
+            analyzer.current_task_type = "detect_bands"
+            analyzer.current_task_params = params
+            
+            self.btn_detect.setEnabled(False)
+            self.lbl_status.setText("⌛  Detecting Ponceau bands...")
+            self.lbl_status.setStyleSheet(f"color: {Colors.FG_PRIMARY};")
+            
+            task_id = task_scheduler.submit(analyzer, analyzer.state)
+            
+            def _on_finished(tid, results):
+                if tid != task_id: return
+                task_scheduler.task_finished.disconnect(_on_finished)
+                task_scheduler.task_error.disconnect(_on_error)
+                
+                # Unpack results back into analyzer state
+                analyzer.state.bands = results.get("bands", [])
+                analyzer.state.profiles = results.get("profiles", [])
+                analyzer.state.baselines = results.get("baselines", [])
+                analyzer.state.lane_orientations = results.get("lane_orientations", [])
+                analyzer.state.detection_image = results.get("detection_image")
+                
+                self.btn_detect.setEnabled(True)
+                n = len(analyzer.state.bands)
+                self.lbl_status.setText(f"✅  {n} Ponceau bands detected")
+                self.lbl_status.setStyleSheet(f"color: {Colors.SUCCESS};")
+                self._panel.status_message.emit(f"Ponceau: {n} bands detected")
+                
+                self._sync_mode(self._panel)
+                self._sync_canvas_and_history()
+                self._update_chart()
+
+            def _on_error(tid, error_msg):
+                if tid != task_id: return
+                task_scheduler.task_finished.disconnect(_on_finished)
+                task_scheduler.task_error.disconnect(_on_error)
+                
+                self.btn_detect.setEnabled(True)
+                self.lbl_status.setText(f"❌  {error_msg}")
+                self.lbl_status.setStyleSheet(f"color: {Colors.ACCENT_DANGER};")
+                logger.error(f"Ponceau detection task error: {error_msg}")
+
+            task_scheduler.task_finished.connect(_on_finished)
+            task_scheduler.task_error.connect(_on_error)
+
         except Exception as e:
+            self.btn_detect.setEnabled(True)
             self.lbl_status.setText(f"❌  {e}")
             self.lbl_status.setStyleSheet(f"color: {Colors.ACCENT_DANGER};")
-            logger.exception("Ponceau band detection error")
+            logger.exception("Ponceau band detection error during submission")
 
     def _on_mode_changed(self, _idx: int) -> None:
         self._sync_mode(self._panel)

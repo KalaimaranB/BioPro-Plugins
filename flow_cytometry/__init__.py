@@ -4,6 +4,8 @@ A scientist-centric flow cytometry analysis environment with workspace-based
 navigation, FMO-guided gating, adaptive gates, and reusable workflow templates.
 """
 
+__version__ = "0.1.3"
+__plugin_id__ = "flow_cytometry"
 
 def get_panel_class():
     """Returns the main QWidget class that should be injected into the UI.
@@ -14,3 +16,11 @@ def get_panel_class():
     """
     from .ui.main_panel import FlowCytometryPanel
     return FlowCytometryPanel
+
+def cleanup():
+    """Module-level cleanup."""
+    pass
+
+def shutdown():
+    """Module-level shutdown."""
+    pass

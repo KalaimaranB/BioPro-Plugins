@@ -10,6 +10,7 @@ from pathlib import Path
 from datetime import datetime
 import requests
 import psutil
+import torch  # Added for VRAM cleanup in shutdown
 
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QSize, QTimer
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QBrush, QColor, QPen, QFont
@@ -20,12 +21,14 @@ from PyQt6.QtWidgets import (
     QCheckBox, QDoubleSpinBox, QTabWidget,
     QDialog, QLineEdit, QTextEdit, QDialogButtonBox, QFileDialog
 )
+from biopro.sdk.core import PluginBase
+from biopro.sdk.ui import HeaderLabel, PrimaryButton, SubtitleLabel
 from .workers import PipelineWorker, ModelDownloadWorker, LibraryLoaderWorker
-
 from biopro.ui.theme import Colors
 from .image_canvas import MultiChannelCanvas
 from .channel_manager import ChannelManagerWidget
 from biopro.plugins.cytometrics.analysis.image_stack import ImageStack
+from biopro.plugins.cytometrics.analysis.state import CytoMetricsState
 
 
 class HardwareMonitor(QWidget):
@@ -86,6 +89,10 @@ class HardwareMonitor(QWidget):
             self.update()
         except Exception:
             pass
+
+    def stop(self):
+        """Stop the monitoring timer."""
+        self._timer.stop()
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -350,15 +357,33 @@ class ModelManagerDialog(QDialog):
             QMessageBox.warning(self, "Error", f"Could not delete file:\n{e}")
 
     def _start_download(self):
+        from biopro.sdk.core import FunctionalTask
+        from biopro.core import task_scheduler
+        from .workers import download_model_func
+        
         self.btn_download.setEnabled(False)
         self.progress_bar.setVisible(True)
-        self.progress_bar.setValue(0)
-        self.lbl_status.setText("Downloading...")
+        self.lbl_status.setText("Downloading via TaskScheduler...")
 
-        self.worker = ModelDownloadWorker()
-        self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.finished.connect(self._on_download_finished)
-        self.worker.start()
+        task = FunctionalTask(download_model_func)
+        task_id = task_scheduler.submit(task, None) # No state needed for download
+        
+        def _on_finished(tid, results):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_finished)
+            task_scheduler.task_error.disconnect(_on_error)
+            
+            res = results.get("task_result", {})
+            self._on_download_finished(res.get("success", False), "Model downloaded" if res.get("success") else "Failed")
+
+        def _on_error(tid, error_msg):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_finished)
+            task_scheduler.task_error.disconnect(_on_error)
+            self._on_download_finished(False, error_msg)
+
+        task_scheduler.task_finished.connect(_on_finished)
+        task_scheduler.task_error.connect(_on_error)
 
     def _on_download_finished(self, success, msg):
         self.progress_bar.setVisible(False)
@@ -521,20 +546,15 @@ class WrappingLabel(QLabel):
         super().resizeEvent(event)
         self.updateGeometry()
 
-class CytoMetricsPanel(QWidget):
-    state_changed = pyqtSignal()
+class CytoMetricsPanel(PluginBase):
+    # state_changed and status_message are now provided by PluginBase
 
-    def __init__(self, parent=None):
-        super().__init__(parent)
+    def __init__(self, plugin_id: str = "cytometrics", parent=None):
+        super().__init__(plugin_id, parent)
         self.setMinimumWidth(380)
         self.setMinimumHeight(600)
 
-        self.state = {
-            "scale": None,
-            "cells": [],
-            "cell_counter": 0,
-            "channels_metadata": []
-        }
+        self.state = CytoMetricsState()
 
         self.image_stack = ImageStack()
         self.canvas = MultiChannelCanvas()
@@ -546,10 +566,70 @@ class CytoMetricsPanel(QWidget):
         self._update_run_button_state()
         self.state_changed.connect(self._update_results_tab)
 
-        # Kick off heavy AI imports in the background immediately
-        self._ai_loader = LibraryLoaderWorker()
-        self._ai_loader.finished.connect(self._on_ai_loaded)
-        self._ai_loader.start()
+        # Kick off heavy AI imports via FunctionalTask
+        from biopro.sdk.core import FunctionalTask
+        from biopro.core import task_scheduler
+        from .workers import load_libraries_func
+        
+        task = FunctionalTask(load_libraries_func)
+        task_id = task_scheduler.submit(task, self.state)
+        
+        def _on_loader_finished(tid, results):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_loader_finished)
+            task_scheduler.task_error.disconnect(_on_loader_error)
+            
+            res = results.get("task_result", {})
+            self._on_ai_loaded(res.get("success", False), res.get("pipelines", {}), "Loaded")
+
+        def _on_loader_error(tid, error):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_loader_finished)
+            task_scheduler.task_error.disconnect(_on_loader_error)
+            self._on_ai_loaded(False, {}, error)
+
+        task_scheduler.task_finished.connect(self._on_loader_finished)
+        task_scheduler.task_error.connect(self._on_loader_error)
+
+    def cleanup(self) -> None:
+        """Called when the Cytometrics tab is closed."""
+        logger.info("Cleaning up CytoMetrics panel...")
+
+        # 1. Stop UI timers to prevent 'zombie' updates
+        if hasattr(self, 'hardware_monitor'):
+            self.hardware_monitor.stop()
+        
+        # We need to find the BioLoadingBar in the layout if it's there
+        # but better to store a ref in future. For now, stop the ones we know.
+        
+        # 2. Release image data
+        if self.image_stack:
+            self.image_stack.clear()
+        
+        # 3. Disconnect and nullify state
+        super().cleanup()
+
+    def shutdown(self) -> None:
+        """Called for global module cleanup."""
+        logger.info("Shutting down CytoMetrics module...")
+        
+        # Release the heavy AI pipelines
+        if hasattr(self, 'pipelines'):
+            for pipe in self.pipelines.values():
+                if hasattr(pipe, 'model'):
+                    pipe.model = None
+            self.pipelines.clear()
+        
+        # Force VRAM release if torch is loaded
+        if "torch" in sys.modules:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                # MPS doesn't have an explicit clear_cache like CUDA, 
+                # but setting models to None and garbage collecting helps.
+                import gc
+                gc.collect()
 
     def _setup_ui(self):
         main_layout = QVBoxLayout(self)
@@ -570,14 +650,12 @@ class CytoMetricsPanel(QWidget):
         control_layout.setContentsMargins(15, 15, 15, 10)
         control_layout.setSpacing(10)
 
-        header = QLabel("CytoMetrics")
-        header.setStyleSheet(f"color: {Colors.FG_PRIMARY}; font-size: 24px; font-weight: bold; border: none;")
+        header = HeaderLabel("CytoMetrics")
         control_layout.addWidget(header)
 
         session_layout = QHBoxLayout()
 
-        self.btn_save_session = QPushButton("💾 Save Session")
-        self.btn_save_session.setStyleSheet(self._btn_style(Colors.BG_DARK, align="center"))
+        self.btn_save_session = PrimaryButton("💾 Save Session")
         self.btn_save_session.clicked.connect(self._on_save_workflow)
 
         session_layout.addWidget(self.btn_save_session)
@@ -891,7 +969,7 @@ class CytoMetricsPanel(QWidget):
 
 
     def _update_run_button_state(self):
-        has_scale = self.state["scale"] is not None
+        has_scale = self.state.scale > 0
         self.btn_run_pipeline.setEnabled(has_scale)
         self.lbl_calibration_warning.setVisible(not has_scale)
 
@@ -994,15 +1072,31 @@ class CytoMetricsPanel(QWidget):
         self.progress_bar.setVisible(True)
 
         # --- THE FIX: Wipe old cells and reset IDs on rerun ---
-        self.state["cells"].clear()
-        self.state["cell_counter"] = 0
+        self.state.cells.clear()
+        self.state.cell_counter = 0
 
-        self.worker = PipelineWorker(pipeline, self.image_stack, params, scale)
-        self.worker.progress.connect(self.progress_bar.setValue)
-        self.worker.status.connect(lambda msg: self.btn_run_pipeline.setText(f"⏳ {msg}"))
-        self.worker.finished.connect(self._on_pipeline_finished)
-        self.worker.error.connect(self._on_pipeline_error)
-        self.worker.start()
+        from biopro.core import task_scheduler
+        from .workers import CytoPipelineWorker
+        
+        analyzer = CytoPipelineWorker()
+        analyzer.configure(pipeline, self.image_stack, params, scale)
+        
+        task_id = task_scheduler.submit(analyzer, self.state)
+        
+        def _on_finished(tid, results):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_finished)
+            task_scheduler.task_error.disconnect(_on_error)
+            self._on_pipeline_finished(results.get("result_cells", []))
+
+        def _on_error(tid, error):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_finished)
+            task_scheduler.task_error.disconnect(_on_error)
+            self._on_pipeline_error(error)
+
+        task_scheduler.task_finished.connect(_on_finished)
+        task_scheduler.task_error.connect(_on_error)
 
     def _on_pipeline_finished(self, new_cells):
         self._update_run_button_state()
@@ -1015,11 +1109,11 @@ class CytoMetricsPanel(QWidget):
             return
 
         for cell_data in new_cells:
-            self.state["cell_counter"] += 1
-            cell_data["id"] = self.state["cell_counter"]
-            self.state["cells"].append(cell_data)
+            self.state.cell_counter += 1
+            cell_data["id"] = self.state.cell_counter
+            self.state.cells.append(cell_data)
 
-        self.load_state(self.export_state())
+        self.set_state(self.state)
         self.state_changed.emit()
 
     def _on_pipeline_error(self, error_msg):
@@ -1029,15 +1123,30 @@ class CytoMetricsPanel(QWidget):
         self.progress_bar.setVisible(False)
         QMessageBox.critical(self, "Pipeline Error", f"An error occurred:\n{error_msg}")
 
-    def export_state(self) -> dict:
-        channels_meta = []
-        for c in self.image_stack.channels:
-            # Hunt for the path under different common attribute names
-            img_path = getattr(c, 'path', getattr(c, 'filepath', getattr(c, 'file_path', '')))
-            channels_meta.append({"name": c.name, "path": str(img_path), "color": c.color})
+    def cleanup(self) -> None:
+        """Called when the CytoMetrics tab is closed."""
+        logger.info("Cleaning up CytoMetrics panel...")
+        # 1. Base cleanup (nulls state)
+        super().cleanup()
+        # 2. Cleanup UI
+        if self.canvas:
+            self.canvas.cleanup()
 
-        # Capture the UI rules so they restore on load
-        ui_params = {
+    def shutdown(self) -> None:
+        """Called when application exits."""
+        logger.info("Shutting down CytoMetrics plugin...")
+        # Clear large state objects
+        if self.state:
+            self.state.cells.clear()
+        if self.image_stack:
+            self.image_stack.channels.clear()
+
+    # ── BioPro API: State Management ──────────────────────────────────
+
+    def get_state(self) -> CytoMetricsState:
+        """Package the workspace state for the SDK."""
+        # Sync UI params before exporting
+        self.state.ui_params = {
             "target_channel": self.combo_target_channel.currentText(),
             "seed_channel": self.combo_seed_channel.currentText(),
             "pipeline": self.combo_pipeline.currentText(),
@@ -1048,14 +1157,66 @@ class CytoMetricsPanel(QWidget):
             "use_dual": self.check_dual_channel.isChecked(),
             "exclude_borders": getattr(self, 'check_exclude_borders', QCheckBox()).isChecked()
         }
+        
+        # Sync channels metadata
+        channels_meta = []
+        for c in self.image_stack.channels:
+            img_path = getattr(c, 'path', getattr(c, 'filepath', getattr(c, 'file_path', '')))
+            channels_meta.append({"name": c.name, "path": str(img_path), "color": c.color})
+        self.state.channels_metadata = channels_meta
+        
+        return self.state
 
-        return {
-            "scale": self.state.get("scale", 0.0),
-            "cells": [c.copy() for c in self.state.get("cells", [])],
-            "cell_counter": self.state.get("cell_counter", 0),
-            "channels_metadata": channels_meta,
-            "ui_params": ui_params
-        }
+    def set_state(self, state: CytoMetricsState) -> None:
+        """Restore the workspace from an SDK state object."""
+        if not state:
+            return
+        
+        self.state = state
+        
+        # 1. Restore images if needed
+        try:
+            if state.channels_metadata:
+                self.load_images_from_meta(state.channels_metadata)
+        except Exception as e:
+            logger.exception("Failed to restore images")
+
+        # 2. Restore UI settings
+        ui = state.ui_params
+        if ui:
+            self.combo_target_channel.setCurrentText(ui.get("target_channel", ""))
+            self.combo_seed_channel.setCurrentText(ui.get("seed_channel", ""))
+            self.combo_pipeline.setCurrentText(ui.get("pipeline", ""))
+            self.spin_min_area.setValue(ui.get("min_area", 10.0))
+            self.spin_max_area.setValue(ui.get("max_area", 5000.0))
+            self.spin_diameter.setValue(ui.get("diameter", 0.0))
+            self.spin_flow.setValue(ui.get("flow", 0.4))
+            self.check_dual_channel.setChecked(ui.get("use_dual", False))
+            if hasattr(self, 'check_exclude_borders'):
+                self.check_exclude_borders.setChecked(ui.get("exclude_borders", True))
+
+        # 3. Restore data & canvas
+        scale_val = state.scale
+        self.lbl_scale.setText(f"Scale: {scale_val:.4f} µm/px" if scale_val > 0 else "Scale: Uncalibrated")
+        self._update_run_button_state()
+
+        if state.cells:
+            self.canvas.draw_cells_from_state(state.cells)
+            
+        self._refresh_table()
+        self._update_results_tab()
+
+    def export_state(self) -> dict:
+        """Legacy export_state for backward compatibility."""
+        state_obj = self.get_state()
+        return state_obj.to_dict()
+
+    def load_state(self, state_dict: dict) -> None:
+        """Legacy load_state for backward compatibility."""
+        if not state_dict:
+            return
+        state_obj = CytoMetricsState.from_dict(state_dict)
+        self.set_state(state_obj)
 
     # --- ALIASES FOR BIOPRO DASHBOARD INTEGRATION ---
     def load_workflow(self, payload: dict):
@@ -1066,64 +1227,61 @@ class CytoMetricsPanel(QWidget):
 
     # ------------------------------------------------
 
-    def load_state(self, state_dict: dict):
-        if not state_dict: return
 
-        try:
-            channels_meta = state_dict.get("channels_metadata", [])
-            if not channels_meta: return
+    def load_images_from_meta(self, channels_meta: list[dict]) -> None:
+        """Helper to reload images based on metadata."""
+        current_paths = [getattr(c, 'path', '') for c in self.image_stack.channels]
+        saved_paths = [ch.get("path", "") for ch in channels_meta]
 
-            # 1. Check if we need to physically reload files
-            current_paths = [getattr(c, 'path', '') for c in self.image_stack.channels]
-            saved_paths = [ch.get("path", "") for ch in channels_meta]
+        if current_paths != saved_paths:
+            self.image_stack.channels.clear()
+            if hasattr(self.channel_manager, 'clear_ui'):
+                self.channel_manager.clear_ui()
 
-            if current_paths != saved_paths:
-                self.image_stack.channels.clear()
-                if hasattr(self.channel_manager, 'clear_ui'):
-                    self.channel_manager.clear_ui()
+            loaded_paths = set()
+            for ch in channels_meta:
+                path = ch.get("path", "")
+                if path and path not in loaded_paths and Path(path).exists():
+                    added = self.image_stack.add_channel(path, Path(path).name, "gray")
+                    if added:
+                        for ch_name, ch_color in added:
+                            self.channel_manager._add_row_to_ui(ch_name, ch_color)
+                    loaded_paths.add(path)
 
-                    # 2. Simulate the user clicking "Add Image"
-                loaded_paths = set()
-                for ch in channels_meta:
-                    path = ch.get("path", "")
-                    if path and path not in loaded_paths and Path(path).exists():
-                        # This loads the TIFF and returns the channels natively
-                        added = self.image_stack.add_channel(path, Path(path).name, "gray")
-                        if added:
-                            for ch_name, ch_color in added:
-                                self.channel_manager._add_row_to_ui(ch_name, ch_color)
-                        loaded_paths.add(path)
+            for i, ch in enumerate(channels_meta):
+                if i < len(self.image_stack.channels):
+                    saved_name = ch.get("name", f"Ch {i}")
+                    saved_color = ch.get("color", "gray")
+                    self.image_stack.channels[i].name = saved_name
+                    self.image_stack.channels[i].color = saved_color
+                    self.image_stack.channels[i].path = ch.get("path", "")
 
-                # 3. Force Data & UI Table to perfectly match the JSON save
-                for i, ch in enumerate(channels_meta):
-                    if i < len(self.image_stack.channels):
-                        saved_name = ch.get("name", f"Ch {i}")
-                        saved_color = ch.get("color", "gray")
+                    name_item = self.channel_manager.table.item(i, 0)
+                    if name_item:
+                        name_item.setText(saved_name)
+                    color_combo = self.channel_manager.table.cellWidget(i, 1)
+                    if color_combo:
+                        color_combo.blockSignals(True)
+                        color_combo.setCurrentText(saved_color)
+                        color_combo.blockSignals(False)
+            self._render_composite()
 
-                        # Sync backend data
-                        self.image_stack.channels[i].name = saved_name
-                        self.image_stack.channels[i].color = saved_color
-                        self.image_stack.channels[i].path = ch.get("path", "")
-
-                        # Sync UI Table (Column 0 = Name, Column 1 = Color Combo)
-                        name_item = self.channel_manager.table.item(i, 0)
-                        if name_item:
-                            name_item.setText(saved_name)
-                            name_item.setToolTip(saved_name)
-
-                        color_combo = self.channel_manager.table.cellWidget(i, 1)
-                        if color_combo:
-                            color_combo.blockSignals(True)  # Prevent infinite loops
-                            color_combo.setCurrentText(saved_color)
-                            color_combo.blockSignals(False)
-
-                # 4. Render the final image
-                self._render_composite()
-
-        except Exception as e:
-            import traceback
-            traceback.print_exc()  # Prints to your Mac terminal for debugging
-            QMessageBox.critical(self, "Load Error", f"Failed to load images:\n{e}")
+    def _refresh_table(self) -> None:
+        """Sync the results table with the current state."""
+        self.table.setSortingEnabled(False)
+        self.table.setRowCount(0)
+        for cell in self.state.cells:
+            row = self.table.rowCount()
+            self.table.insertRow(row)
+            area = cell.get("area", 0)
+            diam = 2 * math.sqrt(area / math.pi) if area > 0 else 0
+            self.table.setItem(row, 0, NumericTableItem(f"Cell {cell.get('id', 0)}"))
+            self.table.setItem(row, 1, NumericTableItem(f"{area:.1f}"))
+            self.table.setItem(row, 2, NumericTableItem(f"{cell.get('perim', 0):.1f}"))
+            self.table.setItem(row, 3, NumericTableItem(f"{cell.get('circ', 0):.2f}"))
+            self.table.setItem(row, 4, NumericTableItem(f"{diam:.1f}"))
+        self.table.setSortingEnabled(True)
+        self.table.scrollToBottom()
 
         try:
             # --- RESTORE DATA & CANVAS ---
@@ -1183,8 +1341,8 @@ class CytoMetricsPanel(QWidget):
                 if x_res and res_unit and x_res[1] != 0:
                     px_per_unit = x_res[0] / x_res[1]
                     if res_unit == 3 and (px_per_unit / 10000.0) != 0:
-                        self.state["scale"] = 1.0 / (px_per_unit / 10000.0)
-                        self.lbl_scale.setText(f"Scale: {self.state['scale']:.4f} µm/px")
+                        self.state.scale = 1.0 / (px_per_unit / 10000.0)
+                        self.lbl_scale.setText(f"Scale: {self.state.scale:.4f} µm/px")
                         self._update_run_button_state()
                         self.state_changed.emit()
         except Exception:
@@ -1199,8 +1357,8 @@ class CytoMetricsPanel(QWidget):
         microns, ok = QInputDialog.getDouble(self, "Set Scale", f"Line is {pixels:.1f} px long.\nMicrons?", 20.0, 0.001,
                                              10000.0, 3)
         if ok and microns > 0:
-            self.state["scale"] = microns / pixels
-            self.load_state(self.export_state())
+            self.state.scale = microns / pixels
+            self.set_state(self.state)
             self._update_run_button_state()
             self.state_changed.emit()
 
@@ -1220,14 +1378,14 @@ class CytoMetricsPanel(QWidget):
             area_px += (points[i][0] * points[j][1] - points[j][0] * points[i][1])
             perim_px += math.hypot(points[j][0] - points[i][0], points[j][1] - points[i][1])
         area_px = abs(area_px) / 2.0
-        scale = self.state["scale"] if self.state["scale"] else 1.0
+        scale = self.state.scale if self.state.scale else 1.0
         area_um2, perim_um = area_px * (scale ** 2), perim_px * scale
         circularity = (4 * math.pi * area_um2) / (perim_um ** 2) if perim_um > 0 else 0.0
-        self.state["cell_counter"] += 1
-        self.state["cells"].append(
-            {"id": self.state["cell_counter"], "points": points, "area": area_um2, "perim": perim_um,
+        self.state.cell_counter += 1
+        self.state.cells.append(
+            {"id": self.state.cell_counter, "points": points, "area": area_um2, "perim": perim_um,
              "circ": circularity})
-        self.load_state(self.export_state())
+        self.set_state(self.state)
         self.state_changed.emit()
 
     def _btn_style(self, bg_color, align="center"):
@@ -1269,13 +1427,13 @@ class CytoMetricsPanel(QWidget):
 
     def _on_cell_deleted(self, cell_id):
         """Removes a cell by ID and triggers a state refresh for Undo/Redo."""
-        self.state["cells"] = [c for c in self.state["cells"] if c["id"] != cell_id]
-        self.load_state(self.export_state())
+        self.state.cells = [c for c in self.state.cells if c["id"] != cell_id]
+        self.set_state(self.state)
         self.state_changed.emit()
 
     def _update_results_tab(self):
         """Refreshes the histogram and stats when cells change."""
-        cells = self.state["cells"]
+        cells = self.state.cells
         num = len(cells)
         if num > 0:
             avg_area = sum(c["area"] for c in cells) / num
@@ -1287,7 +1445,7 @@ class CytoMetricsPanel(QWidget):
 
     def _on_export_csv(self):
         """Saves the data table to a CSV file."""
-        if not self.state["cells"]:
+        if not self.state.cells:
             QMessageBox.information(self, "No Data", "There are no cells to export.")
             return
 
@@ -1299,7 +1457,7 @@ class CytoMetricsPanel(QWidget):
                     # Add Diameter to the header
                     writer.writerow(["Cell_ID", "Area_um2", "Perimeter_um", "Circularity", "Diameter_um"])
 
-                    for c in self.state["cells"]:
+                    for c in self.state.cells:
                         diam = 2 * math.sqrt(c["area"] / math.pi)
                         writer.writerow(
                             [c["id"], f"{c['area']:.2f}", f"{c['perim']:.2f}", f"{c['circ']:.3f}", f"{diam:.2f}"])

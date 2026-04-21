@@ -48,12 +48,14 @@ import numpy as np
 import pandas as pd
 from numpy.typing import NDArray
 
+from biopro.sdk.core import PluginState
+
 from biopro.plugins.western_blot.analysis.lane_detection import LaneROI
 from biopro.plugins.western_blot.analysis.peak_analysis import DetectedBand
 
 
 @dataclass
-class AnalysisState:
+class AnalysisState(PluginState):
     """Mutable state for a single analysis run.
 
     Each field maps to one pipeline stage.  Fields are reset by the

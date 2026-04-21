@@ -20,6 +20,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
+from biopro.sdk.core import PluginState
+
 import numpy as np
 
 from .compensation import CompensationMatrix
@@ -30,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class FlowState:
+class FlowState(PluginState):
     """Mutable state for one flow cytometry analysis session.
 
     Attributes:

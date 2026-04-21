@@ -146,6 +146,7 @@ class FlowCanvas(FigureCanvasQTAgg):
     gate_created = pyqtSignal(object)       # Gate instance
     gate_modified = pyqtSignal(str)         # gate_id
     gate_selected = pyqtSignal(object)      # gate_id or None
+    render_requested = pyqtSignal()         # Emitted on context menu "Render"
 
     def __init__(self, parent=None) -> None:
         # Apply BioPro theme
@@ -212,6 +213,10 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._gate_nodes: list[GateNode] = []      # for stat labels
         self._selected_gate_id: Optional[str] = None
 
+        # ── Rendering constraints ─────────────────────────────────────
+        self._max_events: Optional[int] = 100_000  # Default subsampling limit
+        self._quality_multiplier: float = 1.0     # Grid resolution scaler
+
         # ── Gate editing ──────────────────────────────────────────────
         self._editing_gate_id: Optional[str] = None
         self._edit_handle_idx: Optional[int] = None
@@ -238,6 +243,9 @@ class FlowCanvas(FigureCanvasQTAgg):
         )
         self._loading_label.setVisible(False)
         self._loading_label.raise_()
+
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._on_context_menu)
 
         # Show empty state
         self._show_empty()
@@ -579,36 +587,32 @@ class FlowCanvas(FigureCanvasQTAgg):
                 self._ax.yaxis.set_major_formatter(FixedFormatter(labels))
 
     def _build_bio_ticks(self, scale, is_biex):
-        """Build biologically-sensible tick positions and labels.
+        """Build FlowJo-canonical tick positions and labels.
     
-        Matches FlowJo's default axis labeling:
-        - Positive decades: 10^3, 10^4, 10^5  (NOT 10^2 — that's too granular)
-        - Biexponential adds 0 and optional negative decades
-        - Log scale: positive decades only, no zero
+        Biexponential: -10^3, 0, 10^3, 10^4, 10^5  (equal visual gaps)
+        Log:            10^3, 10^4, 10^5
         """
         import numpy as np
     
-        # FlowJo shows 10^3, 10^4, 10^5 as the standard positive ticks.
-        # 10^2 (100) is omitted because after compensation many channels have
-        # genuine signal starting at ~200, so a 10^2 tick adds visual noise.
-        pos_decades = [10**3, 10**4, 10**5, 10**6]
-        pos_labels  = ["$10^3$", "$10^4$", "$10^5$", "$10^6$"]
+        # Canonical FlowJo positive decades — starts at 10^3, not 10^2
+        pos_decades = [10**3, 10**4, 10**5]
+        pos_labels  = ["$10^3$", "$10^4$", "$10^5$"]
     
         if is_biex:
+            # Show negative side only when axis extends below zero
             show_neg = scale.logicle_a > 0 or (
                 scale.min_val is not None and scale.min_val < 0
             )
-    
             if show_neg:
-                neg_decades = [-10**3, -10**2]
-                neg_labels  = [r"$-10^3$", r"$-10^2$"]
+                # -10^3 is the standard negative tick FlowJo shows
+                neg_decades = [-10**3]
+                neg_labels  = [r"$-10^3$"]
                 raw = np.array(neg_decades + [0] + pos_decades, dtype=float)
                 lbl = neg_labels + ["0"] + pos_labels
             else:
                 raw = np.array([0] + pos_decades, dtype=float)
                 lbl = ["0"] + pos_labels
         else:
-            # Log: no zero or negatives
             raw = np.array(pos_decades, dtype=float)
             lbl = pos_labels
     
@@ -643,8 +647,8 @@ class FlowCanvas(FigureCanvasQTAgg):
         """Simple scatter plot with small, translucent dots."""
         # Subsample if too many events for performance
         n = len(x)
-        if n > 50_000:
-            idx = np.random.choice(n, 50_000, replace=False)
+        if self._max_events is not None and n > self._max_events:
+            idx = np.random.choice(n, self._max_events, replace=False)
             x, y = x[idx], y[idx]
 
         self._ax.scatter(
@@ -690,14 +694,13 @@ class FlowCanvas(FigureCanvasQTAgg):
         y_vis = np.clip(y_vis, y_lo, y_hi)
     
         # Uniform subsampling
-        MAX_SCATTER = 100_000
-        if len(x_vis) > MAX_SCATTER:
+        if self._max_events is not None and len(x_vis) > self._max_events:
             rng = np.random.default_rng(42)
-            idx = rng.choice(len(x_vis), MAX_SCATTER, replace=False)
+            idx = rng.choice(len(x_vis), self._max_events, replace=False)
             x_vis, y_vis = x_vis[idx], y_vis[idx]
     
         # ── Density estimation ────────────────────────────────────────────────
-        N_BINS = 512
+        N_BINS = int(512 * self._quality_multiplier)
         H = fast_hist2d(
             y_vis, x_vis,
             range=[[y_lo, y_hi], [x_lo, x_hi]],
@@ -1505,3 +1508,23 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._ax.set_xticks([])
         self._ax.set_yticks([])
         self.draw()
+
+    # ── Context Menu ──────────────────────────────────────────────────
+
+    def _on_context_menu(self, pos) -> None:
+        """Show context menu on right click."""
+        from PyQt6.QtWidgets import QMenu
+        from PyQt6.QtGui import QAction
+
+        menu = QMenu(self)
+        menu.setStyleSheet(
+            f"QMenu {{ background: {Colors.BG_DARK}; color: {Colors.FG_PRIMARY};"
+            f" border: 1px solid {Colors.BORDER}; font-size: 11px; }}"
+            f"QMenu::item:selected {{ background: {Colors.BG_MEDIUM}; }}"
+        )
+
+        render_act = QAction("🖼️  Render Full Quality...", self)
+        render_act.triggered.connect(self.render_requested.emit)
+        menu.addAction(render_act)
+
+        menu.exec(self.mapToGlobal(pos))

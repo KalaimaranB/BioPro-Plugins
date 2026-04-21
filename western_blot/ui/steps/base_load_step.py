@@ -11,12 +11,12 @@ import numpy as np
 
 from PyQt6.QtCore import QRectF
 from PyQt6.QtWidgets import (
-    QCheckBox, QDoubleSpinBox, QFileDialog, QGroupBox,
-    QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget, QMessageBox
+    QCheckBox, QDoubleSpinBox, QGroupBox,
+    QHBoxLayout, QLabel, QVBoxLayout, QWidget
 )
 
-from biopro.ui.theme import Colors
-from biopro.plugins.western_blot.ui.base import WizardPanel, WizardStep
+from biopro.sdk.ui import WizardPanel, WizardStep, PrimaryButton
+from biopro.sdk.utils import get_image_path, show_error
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +66,7 @@ class BaseLoadStep(WizardStep):
         # File picker
         file_group = QGroupBox(self._file_group_title)
         file_layout = QVBoxLayout(file_group)
-        self.btn_open = QPushButton(self._open_btn_text)
-        self.btn_open.setMinimumHeight(40)
+        self.btn_open = PrimaryButton(self._open_btn_text)
         self.btn_open.clicked.connect(self._open_file)
         file_layout.addWidget(self.btn_open)
         self.lbl_filename = QLabel("No file loaded")
@@ -293,46 +292,15 @@ class BaseLoadStep(WizardStep):
             self._preprocess()
 
     def _open_file(self) -> None:
-        main_win = self._panel.window()
-        pm = getattr(main_win, "project_manager", None)
-        default_dir = str(pm.project_dir) if pm else ""
-
-        path, _ = QFileDialog.getOpenFileName(
+        path = get_image_path(
             self._panel,
             self._get_open_dialog_title(),
-            default_dir,
-            "Image Files (*.tif *.tiff *.png *.jpg *.jpeg *.bmp);;All Files (*)",
+            filters="Image Files (*.tif *.tiff *.png *.jpg *.jpeg *.bmp);;All Files (*)"
         )
         if not path:
             return
             
         final_path = Path(path)
-        
-        if pm:
-            try:
-                is_in_workspace = pm.assets_dir.resolve() in final_path.resolve().parents
-                
-                if not is_in_workspace:
-                    reply = QMessageBox.question(
-                        self._panel,
-                        "Copy to Workspace?",
-                        f"The image '{final_path.name}' is outside the project folder.\\n\\n"
-                        "Would you like to copy it into the project's 'assets' folder for safe keeping and portability?",
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.Yes
-                    )
-                    copy_to_workspace = (reply == QMessageBox.StandardButton.Yes)
-                else:
-                    copy_to_workspace = False
-                    
-                file_hash = pm.add_image(final_path, copy_to_workspace)
-                resolved_path = pm.get_asset_path(file_hash)
-                if resolved_path:
-                    final_path = resolved_path
-                    
-            except Exception as e:
-                QMessageBox.warning(self._panel, "Asset Error", f"Failed to add asset to project:\\n{e}")
-                logger.exception("Asset Management Error")
 
         try:
             analyzer = self.get_analyzer(self._panel)
@@ -347,6 +315,7 @@ class BaseLoadStep(WizardStep):
             self.lbl_filename.setText(f"❌  Error: {e}")
             prefix = self._get_status_prefix()
             self._panel.status_message.emit(f"Error loading {prefix}image: {e}")
+            show_error(self._panel, f"Failed to load {prefix}image", str(e))
             logger.exception(f"Error loading {prefix}image")
 
     def _post_load_hook(self) -> None:

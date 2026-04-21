@@ -31,6 +31,7 @@ Example::
 """
 
 from __future__ import annotations
+from biopro.sdk.core import AnalysisBase
 
 import logging
 from pathlib import Path
@@ -45,7 +46,7 @@ from biopro.plugins.western_blot.analysis.band_matching import (
     align_lanes_by_correlation,
     assign_matched_bands,
 )
-from biopro.shared.analysis.image_utils import (
+from biopro.sdk.contrib import (
     auto_detect_inversion,
     crop_to_content,
     enhance_for_band_detection,
@@ -69,7 +70,7 @@ logger = logging.getLogger(__name__)
 
 
 
-class WesternBlotAnalyzer:
+class WesternBlotAnalyzer(AnalysisBase):
     """High-level western blot densitometry analyzer.
 
     This class orchestrates the entire analysis workflow, managing state
@@ -92,9 +93,42 @@ class WesternBlotAnalyzer:
         df = analyzer.get_results()
     """
 
-    def __init__(self) -> None:
+    def __init__(self, plugin_id: str = "western_blot") -> None:
         """Initialize an empty analyzer."""
+        super().__init__(plugin_id)
         self.state = AnalysisState()
+
+    def run(self, state: AnalysisState) -> dict:
+        """Central entry point for background execution.
+        
+        The 'task_type' should be present in the state's results_df metadata
+        or as a transient attribute on the analyzer.
+        """
+        task_type = getattr(self, "current_task_type", "auto")
+        params = getattr(self, "current_task_params", {})
+
+        if task_type == "detect_lanes":
+            lanes = self.detect_lanes(**params)
+            return {"lanes": lanes}
+        
+        elif task_type == "detect_bands":
+            bands = self.detect_bands(**params)
+            # detect_bands also updates profiles, baselines, orientations
+            return {
+                "bands": bands,
+                "profiles": self.state.profiles,
+                "baselines": self.state.baselines,
+                "lane_orientations": self.state.lane_orientations,
+                "detection_image": self.state.detection_image
+            }
+        
+        elif task_type == "compute_results":
+            df = self.compute_densitometry(**params)
+            return {"results_df": df}
+        
+        else: # "auto" or unknown
+            df = self.run_auto(state.image_path, **params)
+            return {"results_df": df}
 
     # ------------------------------------------------------------------
     # Step 1: Load Image

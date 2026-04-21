@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
 )
 
 from biopro.ui.theme import Colors
-from biopro.plugins.western_blot.ui.base import WizardPanel
+from biopro.sdk.ui import WizardPanel
 from biopro.plugins.western_blot.ui.steps.base_bands_step import BaseBandsStep
 
 logger = logging.getLogger(__name__)
@@ -156,41 +156,78 @@ class WBBandsStep(BaseBandsStep):
         )
 
     def _detect_bands(self) -> None:
+        from biopro.core import task_scheduler
+        
         try:
+            analyzer = self._panel.analyzer
+            params = self._detection_params()
             manual_pick = self.chk_manual_pick.isChecked()
-            bands = self._panel.analyzer.detect_bands(
-                **self._detection_params(),
-                manual_pick=manual_pick,
-                force_valleys_as_bands=None,
-            )
+            
+            # Setup background task
+            analyzer.current_task_type = "detect_bands"
+            analyzer.current_task_params = {**params, "manual_pick": manual_pick, "force_valleys_as_bands": None}
+            
+            self.btn_detect.setEnabled(False)
+            self.lbl_status.setText("⌛  Detecting bands...")
+            self.lbl_status.setStyleSheet(f"color: {Colors.FG_PRIMARY};")
+            
+            task_id = task_scheduler.submit(analyzer, analyzer.state)
+            
+            def _on_finished(tid, results):
+                if tid != task_id: return
+                task_scheduler.task_finished.disconnect(_on_finished)
+                task_scheduler.task_error.disconnect(_on_error)
+                
+                # Unpack results back into analyzer state
+                analyzer.state.bands = results.get("bands", [])
+                analyzer.state.profiles = results.get("profiles", [])
+                analyzer.state.baselines = results.get("baselines", [])
+                analyzer.state.lane_orientations = results.get("lane_orientations", [])
+                analyzer.state.detection_image = results.get("detection_image")
+                
+                self.btn_detect.setEnabled(True)
+                bands = analyzer.state.bands
+                lane_types = self._get_lane_types()
+                sample_bands = [
+                    b for b in bands if lane_types.get(b.lane_index, "Sample") == "Sample"
+                ]
 
-            lane_types = self._get_lane_types()
-            sample_bands = [
-                b for b in bands if lane_types.get(b.lane_index, "Sample") == "Sample"
-            ]
+                # Per-lane summary
+                counts: dict[int, int] = {}
+                for b in bands:
+                    counts.setdefault(b.lane_index, 0)
+                    counts[b.lane_index] += 1
+                summary = " | ".join(
+                    f"L{i + 1}: {n}{' [' + lane_types.get(i, 'S')[0] + ']' if lane_types.get(i, 'Sample') != 'Sample' else ''}"
+                    for i, n in sorted(counts.items())
+                )
 
-            # Per-lane summary
-            counts: dict[int, int] = {}
-            for b in bands:
-                counts.setdefault(b.lane_index, 0)
-                counts[b.lane_index] += 1
-            summary = " | ".join(
-                f"L{i + 1}: {n}{' [' + lane_types.get(i, 'S')[0] + ']' if lane_types.get(i, 'Sample') != 'Sample' else ''}"
-                for i, n in sorted(counts.items())
-            )
+                if manual_pick:
+                    self.lbl_status.setText(f"✅  Profiles computed. Click bands in the image.\n{summary}")
+                else:
+                    self.lbl_status.setText(f"✅  {len(bands)} bands ({len(sample_bands)} sample)\n{summary}")
+                self.lbl_status.setStyleSheet(f"color: {Colors.SUCCESS};")
+                self._panel.status_message.emit(f"Detected {len(bands)} bands ({len(sample_bands)} sample)")
+                self._sync_canvas_and_history()
 
-            if manual_pick:
-                self.lbl_status.setText(f"✅  Profiles computed. Click bands in the image.\n{summary}")
-            else:
-                self.lbl_status.setText(f"✅  {len(bands)} bands ({len(sample_bands)} sample)\n{summary}")
-            self.lbl_status.setStyleSheet(f"color: {Colors.SUCCESS};")
-            self._panel.status_message.emit(f"Detected {len(bands)} bands ({len(sample_bands)} sample)")
-            self._sync_canvas_and_history()
+            def _on_error(tid, error_msg):
+                if tid != task_id: return
+                task_scheduler.task_finished.disconnect(_on_finished)
+                task_scheduler.task_error.disconnect(_on_error)
+                
+                self.btn_detect.setEnabled(True)
+                self.lbl_status.setText(f"❌  {error_msg}")
+                self.lbl_status.setStyleSheet(f"color: {Colors.ACCENT_DANGER};")
+                logger.error(f"Band detection task error: {error_msg}")
+
+            task_scheduler.task_finished.connect(_on_finished)
+            task_scheduler.task_error.connect(_on_error)
 
         except Exception as e:
+            self.btn_detect.setEnabled(True)
             self.lbl_status.setText(f"❌  {e}")
             self.lbl_status.setStyleSheet(f"color: {Colors.ACCENT_DANGER};")
-            logger.exception("Band detection error")
+            logger.exception("Band detection error during submission")
 
     def _on_manual_pick_toggled(self, enabled: bool) -> None:
         self._panel.peak_picking_enabled.emit(enabled)

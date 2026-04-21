@@ -31,6 +31,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from biopro.sdk.core import PluginBase
 from biopro.ui.theme import Colors, Fonts
 
 # Relative imports — all within this plugin
@@ -52,7 +53,7 @@ from ..analysis.gate_propagator import GatePropagator
 logger = logging.getLogger(__name__)
 
 
-class FlowCytometryPanel(QWidget):
+class FlowCytometryPanel(PluginBase):
     """Root widget for the Flow Cytometry workspace.
 
     Injected by BioPro's ``ModuleManager`` as the central workspace
@@ -81,19 +82,18 @@ class FlowCytometryPanel(QWidget):
     """
 
     # ── BioPro-required signals ───────────────────────────────────────
-    state_changed = pyqtSignal()
-    status_message = pyqtSignal(str)
+    # state_changed and status_message are now provided by PluginBase
     results_ready = pyqtSignal(object)
 
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
+    def __init__(self, plugin_id: str = "flow_cytometry", parent=None) -> None:
+        super().__init__(plugin_id, parent)
 
         # ── State ─────────────────────────────────────────────────────
-        self._state = FlowState()
+        self.state = FlowState()
 
         # ── Analysis engines ──────────────────────────────────────────
-        self._gate_controller = GateController(self._state, parent=self)
-        self._gate_propagator = GatePropagator(self._state, parent=self)
+        self._gate_controller = GateController(self.state, parent=self)
+        self._gate_propagator = GatePropagator(self.state, parent=self)
 
         # ── Size policy ───────────────────────────────────────────────
         self.setSizePolicy(
@@ -156,11 +156,11 @@ class FlowCytometryPanel(QWidget):
             f" border-bottom: 1px solid {Colors.BORDER};"
         )
 
-        self._workspace_ribbon = WorkspaceRibbon(self._state)
-        self._compensation_ribbon = CompensationRibbon(self._state)
-        self._gating_ribbon = GatingRibbon(self._state)
-        self._statistics_ribbon = StatisticsRibbon(self._state)
-        self._reports_ribbon = ReportsRibbon(self._state)
+        self._workspace_ribbon = WorkspaceRibbon(self.state)
+        self._compensation_ribbon = CompensationRibbon(self.state)
+        self._gating_ribbon = GatingRibbon(self.state)
+        self._statistics_ribbon = StatisticsRibbon(self.state)
+        self._reports_ribbon = ReportsRibbon(self.state)
 
         self._ribbon_stack.addWidget(self._workspace_ribbon)
         self._ribbon_stack.addWidget(self._compensation_ribbon)
@@ -186,7 +186,7 @@ class FlowCytometryPanel(QWidget):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
 
-        self._groups_panel = GroupsPanel(self._state)
+        self._groups_panel = GroupsPanel(self.state)
         
         # Vertical Splitter for Samples & Gates
         self._left_splitter = QSplitter(Qt.Orientation.Vertical)
@@ -197,8 +197,8 @@ class FlowCytometryPanel(QWidget):
             }}
         """)
         
-        self._sample_list = SampleList(self._state)
-        self._gate_hierarchy = GateHierarchy(self._state)
+        self._sample_list = SampleList(self.state)
+        self._gate_hierarchy = GateHierarchy(self.state)
         
         self._left_splitter.addWidget(self._sample_list)
         self._left_splitter.addWidget(self._gate_hierarchy)
@@ -215,10 +215,10 @@ class FlowCytometryPanel(QWidget):
         left_layout.addWidget(self._left_splitter, stretch=1)
 
         # Center: graph canvas area
-        self._graph_manager = GraphManager(self._state)
+        self._graph_manager = GraphManager(self.state)
 
         # Right: properties panel
-        self._properties_panel = PropertiesPanel(self._state, self._gate_controller)
+        self._properties_panel = PropertiesPanel(self.state, self._gate_controller)
 
         self._main_splitter.addWidget(left_sidebar)
         self._main_splitter.addWidget(self._graph_manager)
@@ -365,7 +365,7 @@ class FlowCytometryPanel(QWidget):
         """Gate stats changed → update tree badges and properties."""
         self._gate_hierarchy.update_gate_stats(sample_id, node_id)
         # Update properties if this node is selected
-        if node_id == self._state.current_gate_id:
+        if node_id == self.state.current_gate_id:
             self._properties_panel.refresh()
         self._refresh_gate_overlays(sample_id)
 
@@ -384,7 +384,7 @@ class FlowCytometryPanel(QWidget):
 
     def _on_propagation_complete(self) -> None:
         """All samples finished propagation."""
-        n = len(self._state.experiment.samples)
+        n = len(self.state.experiment.samples)
         self.status_message.emit(f"✓ Gate propagation complete ({n} samples updated).")
 
     def _on_delete_selected_gate(self) -> None:
@@ -399,7 +399,7 @@ class FlowCytometryPanel(QWidget):
             self.status_message.emit("No gate selected to delete.")
             return
 
-        sample = self._state.experiment.samples.get(graph.sample_id)
+        sample = self.state.experiment.samples.get(graph.sample_id)
         if sample:
             # Delete ALL populations sharing this physical gate
             nodes = sample.gate_tree.find_nodes_by_gate(gate_id)
@@ -429,7 +429,7 @@ class FlowCytometryPanel(QWidget):
             return
 
         if gate_id:
-            sample = self._state.experiment.samples.get(graph.sample_id)
+            sample = self.state.experiment.samples.get(graph.sample_id)
             if sample:
                 # Map gate_id back to a primary node_id
                 nodes = sample.gate_tree.find_nodes_by_gate(gate_id)
@@ -454,7 +454,7 @@ class FlowCytometryPanel(QWidget):
 
     def _on_gate_selected(self, node_id: str | None) -> None:
         """Central selection handler for populations across all UI components."""
-        self._state.current_gate_id = node_id
+        self.state.current_gate_id = node_id
         
         # Sync tree selection
         if node_id:
@@ -471,9 +471,9 @@ class FlowCytometryPanel(QWidget):
         self._properties_panel.set_active_gate(node_id)
         
         # Highlight on canvas (canvas uses physical gate_id for artist storage)
-        sample_id = self._state.current_sample_id
+        sample_id = self.state.current_sample_id
         if sample_id and node_id:
-            sample = self._state.experiment.samples.get(sample_id)
+            sample = self.state.experiment.samples.get(sample_id)
             if sample:
                 node = sample.gate_tree.find_node_by_id(node_id)
                 if node and node.gate:
@@ -504,7 +504,7 @@ class FlowCytometryPanel(QWidget):
         self._groups_panel.refresh()
         self.state_changed.emit()
         self.status_message.emit(
-            f"{len(self._state.experiment.samples)} samples loaded."
+            f"{len(self.state.experiment.samples)} samples loaded."
         )
 
     def _on_compensation_changed(self) -> None:
@@ -513,33 +513,60 @@ class FlowCytometryPanel(QWidget):
         self._gate_hierarchy.refresh()
         self._properties_panel.refresh()
         self.state_changed.emit()
-        src = self._state.compensation.source if self._state.compensation else "none"
+        src = self.state.compensation.source if self.state.compensation else "none"
         self.status_message.emit(f"Compensation updated (source: {src}).")
+
+    def cleanup(self) -> None:
+        """Called when the Flow Cytometry tab is closed."""
+        logger.info("Cleaning up Flow Cytometry panel...")
+
+        # 1. Base cleanup (nulls state)
+        super().cleanup()
+
+        # 2. Cleanup background tasks
+        if self._gate_propagator:
+            self._gate_propagator.cleanup()
+
+        # 3. Cleanup UI components
+        if self._graph_manager:
+            self._graph_manager.cleanup()
+
+        if self._sample_list:
+            self._sample_list.cleanup()
+
+    def shutdown(self) -> None:
+        """Called when the application exists or plugin is uninstalled."""
+        logger.info("Shutting down Flow Cytometry plugin...")
+        # Clear any global caches if they existed
+        pass
 
     # ── BioPro API: State Management ──────────────────────────────────
 
-    def export_state(self) -> dict:
-        """Package the workspace state for undo/redo snapshots.
+    def get_state(self) -> FlowState:
+        """Package the workspace state for the SDK."""
+        return self.state
 
-        Returns:
-            A deep-copyable dictionary representing the full state.
-        """
+    def set_state(self, state: FlowState) -> None:
+        """Restore the workspace from an SDK state object."""
+        if not state:
+            return
+        self.state = state
+        self._refresh_all()
+
+    def export_state(self) -> dict:
+        """Package the workspace state for backward compatibility."""
         return {
-            "flow_state": self._state.to_workflow_dict(),
+            "flow_state": self.state.to_workflow_dict(),
             "active_tab": self._tab_bar.currentIndex(),
         }
 
     def load_state(self, state_dict: dict) -> None:
-        """Restore the workspace from an undo/redo snapshot.
-
-        Args:
-            state_dict: Dictionary from :meth:`export_state`.
-        """
+        """Restore the workspace for backward compatibility."""
         if not state_dict:
             return
 
         flow_data = state_dict.get("flow_state", {})
-        self._state.from_workflow_dict(flow_data)
+        self.state.from_workflow_dict(flow_data)
 
         tab_idx = state_dict.get("active_tab", 0)
         self._tab_bar.setCurrentIndex(tab_idx)
@@ -548,23 +575,15 @@ class FlowCytometryPanel(QWidget):
         self._refresh_all()
 
     def export_workflow(self) -> dict:
-        """Serialize the workspace for saving to disk.
-
-        Returns:
-            A JSON-serializable dictionary.
-        """
-        return self._state.to_workflow_dict()
+        """Serialize the workspace for saving to disk."""
+        return self.state.to_workflow_dict()
 
     def load_workflow(self, payload: dict) -> None:
-        """Restore the workspace from a saved file.
-
-        Args:
-            payload: Dictionary from :meth:`export_workflow`.
-        """
+        """Restore the workspace from a saved file."""
         if not payload:
             return
 
-        self._state.from_workflow_dict(payload)
+        self.state.from_workflow_dict(payload)
         self._refresh_all()
         self.status_message.emit("Workflow loaded successfully.")
 
@@ -580,5 +599,5 @@ class FlowCytometryPanel(QWidget):
 
     def _sample_name(self, sample_id: str) -> str:
         """Get a sample's display name by ID."""
-        sample = self._state.experiment.samples.get(sample_id)
+        sample = self.state.experiment.samples.get(sample_id)
         return sample.display_name if sample else sample_id

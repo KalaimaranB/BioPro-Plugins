@@ -1,7 +1,7 @@
 """Base class for all Wizard steps to eliminate boilerplate."""
 
-from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
-from biopro.ui.theme import Colors, Fonts
+from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from biopro.sdk.ui import HeaderLabel, SubtitleLabel
 
 class BaseStepWidget(QWidget):
     """Provides standard margins, typography, and a content container."""
@@ -15,17 +15,11 @@ class BaseStepWidget(QWidget):
         self.main_layout.setSpacing(15)
 
         # 2. Standardized Header
-        self.lbl_title = QLabel(title)
-        self.lbl_title.setStyleSheet(
-            f"color: {Colors.FG_PRIMARY}; font-size: {Fonts.SIZE_LARGE}px; font-weight: bold;"
-        )
+        self.lbl_title = HeaderLabel(title)
         self.main_layout.addWidget(self.lbl_title)
 
         if subtitle:
-            self.lbl_subtitle = QLabel(subtitle)
-            self.lbl_subtitle.setStyleSheet(
-                f"color: {Colors.FG_SECONDARY}; font-size: {Fonts.SIZE_NORMAL}px;"
-            )
+            self.lbl_subtitle = SubtitleLabel(subtitle)
             self.lbl_subtitle.setWordWrap(True)
             self.main_layout.addWidget(self.lbl_subtitle)
 

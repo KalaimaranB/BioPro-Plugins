@@ -22,17 +22,20 @@ flow_cytometry/
 ├── __init__.py           # Exposes FlowCytometryPanel
 ├── manifest.json         # BioPro Registry Metadata
 ├── analysis/             # SCALAR LOGIC ONLY
-│   ├── state.py          # The FlowState dataclass
-│   ├── experiment.py     # Experiment models (Sample, Group, WorkflowTemplate)
-│   ├── compensation.py   # Matrix algorithms
-│   ├── transforms.py     # Logicle wrappers
-│   └── fcs_io.py         # FlowKit wrapper
+│   ├── state.py          # Session state container
+│   ├── experiment.py     # Experiment model + workflow templates
+│   ├── compensation.py   # Spillover matrix engine
+│   ├── transforms.py     # Logicle/log/linear via flowkit
+│   ├── gating.py         # Gate types + hierarchical tree
+│   ├── statistics.py     # Population statistics
+│   └── fcs_io.py         # FlowKit-backed FCS loading
 ├── ui/                   # GUI VIEW LAYER
-│   ├── main_panel.py     # The root splitter and manager
-│   ├── graph/            # Matplotlib canvas wrappers
+│   ├── main_panel.py     # Root workspace widget
+│   ├── graph/            # FlowCanvas (matplotlib) + services
 │   ├── ribbons/          # Toolbar action components
-│   └── widgets/          # Hierarchy trees and Properties forms
-```
+│   └── widgets/          # Sidebar panels (groups, tree, props)
+├── workflows/             # Pre-built workflow templates (JSON)
+└── docs/                  # This documentation suite```
 
 ---
 

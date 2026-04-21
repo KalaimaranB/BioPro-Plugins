@@ -16,7 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from biopro.ui.theme import Colors
-from biopro.plugins.western_blot.ui.base import WizardPanel, WizardStep
+from biopro.sdk.ui import WizardPanel, WizardStep
 from biopro.ui.dialogs import SaveWorkflowDialog
 from PyQt6.QtWidgets import QPushButton, QMessageBox
 

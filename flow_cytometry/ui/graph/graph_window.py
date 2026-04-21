@@ -40,6 +40,8 @@ from ...analysis.gating import Gate, GateNode
 from ..widgets.styled_combo import FlowComboBox
 from .flow_canvas import FlowCanvas, DisplayMode, GateDrawingMode
 from .transform_dialog import TransformDialog
+from .render_window import RenderWindow
+
 logger = logging.getLogger(__name__)
 
 # Map tool names to drawing modes
@@ -94,6 +96,9 @@ class GraphWindow(QWidget):
         self._axis_debounce.setSingleShot(True)
         self._axis_debounce.setInterval(100)
         self._axis_debounce.timeout.connect(self._do_axis_render)
+
+        # Store references to modeless render windows to prevent GC
+        self._render_windows: list[RenderWindow] = []
 
         self._setup_ui()
 
@@ -207,6 +212,7 @@ class GraphWindow(QWidget):
         # Wire canvas signals
         self._canvas.gate_created.connect(self._on_gate_created)
         self._canvas.gate_selected.connect(self._on_gate_selected)
+        self._canvas.render_requested.connect(self._on_render_full_quality)
 
         # ── Gate info bar ─────────────────────────────────────────────
         self._gate_info = QLabel()
@@ -446,6 +452,36 @@ class GraphWindow(QWidget):
     def _on_gate_selected(self, gate_id: Optional[str]) -> None:
         """Handle gate selection on the canvas."""
         self.gate_selection_changed.emit(gate_id)
+
+    def _on_render_full_quality(self) -> None:
+        """Launch the high-quality render window."""
+        # Clean up closed windows from the reference list
+        self._render_windows = [w for w in self._render_windows if w.isVisible()]
+
+        x_ch = self._x_combo.currentData() or self._x_combo.currentText()
+        y_ch = self._y_combo.currentData() or self._y_combo.currentText()
+        mode = self._display_combo.currentData()
+
+        # Get current gate overlays
+        gates = self._canvas._active_gates
+        nodes = self._canvas._gate_nodes
+
+        win = RenderWindow(
+            state=self._state,
+            sample_id=self._sample_id,
+            node_id=self._node_id,
+            x_param=x_ch,
+            y_param=y_ch,
+            display_mode=mode,
+            x_scale=self._x_scale,
+            y_scale=self._y_scale,
+            gates=gates,
+            gate_nodes=nodes,
+            parent=self.window(), # Keep it associated with the main window
+        )
+        win.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+        win.show()
+        self._render_windows.append(win)
 
     def _open_transform_dialog(self) -> None:
         """Open the unified Transform & Scaling dialog."""

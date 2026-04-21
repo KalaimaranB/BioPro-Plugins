@@ -207,7 +207,7 @@ def _auto_apply_spill(filename: str, events_df: "pd.DataFrame", metadata: dict) 
         sub_inv = np.linalg.inv(sub_spill)
 
         raw = events_df[present].values.astype(np.float64)
-        events_df[present] = raw @ sub_inv.T
+        events_df[present] = raw @ sub_inv
 
         logger.info(
             "Auto-applied embedded spill compensation to %s (%d/%d channels: %s)",

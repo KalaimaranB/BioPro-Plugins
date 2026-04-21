@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 
 from PyQt6.QtWidgets import QComboBox, QGroupBox, QHBoxLayout, QLabel, QVBoxLayout, QWidget
-from biopro.plugins.western_blot.ui.base import WizardPanel
+from biopro.sdk.ui import WizardPanel
 from biopro.plugins.western_blot.ui.steps.base_lanes_step import BaseLanesStep
 
 logger = logging.getLogger(__name__)

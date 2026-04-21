@@ -15,10 +15,13 @@ import logging
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import QSplitter, QStackedWidget, QVBoxLayout, QWidget, QSizePolicy
 
+from biopro.sdk.core import PluginBase
+from biopro.sdk.ui import WizardPanel
+
 # --- USE RELATIVE IMPORTS FOR PLUGIN FILES ---
 from .image_canvas import ImageCanvas
 from .results_widget import ResultsWidget
-from .base import WizardPanel
+# from .base import WizardPanel  # Removed in favor of SDK WizardPanel
 from .setup_screen import SetupScreen
 from .steps.wb_load import WBLoadStep
 from .steps.wb_lanes import WBLanesStep
@@ -39,7 +42,7 @@ _PAGE_SETUP = 0
 _PAGE_WIZARD = 1
 
 
-class WesternBlotPanel(QWidget):
+class WesternBlotPanel(PluginBase):
     """Western Blot entry point — setup screen then wizard.
 
     Exposes the same signals as the original monolithic panel so
@@ -47,8 +50,7 @@ class WesternBlotPanel(QWidget):
     """
 
     # ── Signals ───────────────────────────────────────────────────────
-    state_changed = pyqtSignal()
-    status_message = pyqtSignal(str)
+    # state_changed and status_message are now handle by PluginBase
     image_changed = pyqtSignal(object)
     lanes_detected = pyqtSignal(object)
     bands_detected = pyqtSignal(object, object)
@@ -59,7 +61,7 @@ class WesternBlotPanel(QWidget):
     profile_hovered = pyqtSignal(int, float)
 
     def __init__(self, parent=None) -> None:
-        super().__init__(parent)
+        super().__init__("western_blot", parent)
         self._canvas = None
         self._wizard: WizardPanel | None = None
         self._wb_results_step: WBResultsStep | None = None
@@ -305,6 +307,73 @@ class WesternBlotPanel(QWidget):
         self._stack.removeWidget(self._wizard_placeholder)
         self._stack.addWidget(wizard)
         self._stack.setCurrentWidget(wizard)
+
+    def cleanup(self) -> None:
+        """Called when the Western Blot tab is closed."""
+        logger.info("Cleaning up Western Blot panel...")
+        
+        # 1. Core-led cleanup (automatic nulling of large arrays in self.state)
+        super().cleanup()
+        
+        # 2. Release UI resources
+        if self._wizard:
+            self._wizard.cleanup()
+            
+        if self.results_widget:
+            self.results_widget.set_canvas(None)
+            
+        if self._canvas:
+            self._canvas.cleanup()
+
+    def shutdown(self) -> None:
+        """Called when the application exists or plugin is uninstalled."""
+        logger.info("Shutting down Western Blot plugin...")
+        # Clear any global caches if they existed
+        pass
+
+    # ── PluginState API ───────────────────────────────────────────────
+
+    def get_state(self) -> AnalysisState:
+        """Packages the complete analysis state for undo/redo snapshots."""
+        # Note: Western Blot state is actually managed by the analyzers!
+        # We return the analyzer's state, and potentially combine it with
+        # UI metadata like current wizard step.
+        
+        # However, the SDK expects a SINGLE State object. 
+        # For multi-analyzer plugins, we use the primary analyzer's state
+        # and attach secondary state as needed.
+        
+        state = self.analyzer.state
+        if self._wizard:
+            state.metadata = {
+                "current_step": self._wizard._idx,
+                "max_step": self._wizard._max_idx
+            }
+            if self._wizard.ponceau_analyzer:
+                 # In a perfect world, AnalysisState would handle nested analyzers.
+                 # For now, we just ensure they are captured.
+                 pass
+        
+        return state
+
+    def set_state(self, state: AnalysisState) -> None:
+        """Restores the analysis state and updates the UI."""
+        self.state = state # PluginBase manages 'self.state'
+        
+        # 1. Restore the image and preprocessing to the analyzer
+        self.analyzer.state = state
+        if state.image_path and state.processed_image is not None:
+             self.image_changed.emit(state.raw_image)
+        
+        # 2. Update Wizard
+        if self._wizard and "current_step" in getattr(state, 'metadata', {}):
+            meta = state.metadata
+            self._wizard._max_idx = meta.get("max_step", 0)
+            self._wizard.go_to_step(meta.get("current_step", 0))
+            
+        # 3. Redraw
+        self.lanes_detected.emit(state.lanes)
+        self.bands_detected.emit(state.bands, state.lanes)
 
     def export_state(self) -> dict:
         """Packages the complete analysis state and UI position into a JSON-safe dictionary."""

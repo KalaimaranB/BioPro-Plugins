@@ -163,26 +163,27 @@ def estimate_logicle_params(
     t: float = 262144.0, 
     m: float = 4.5
 ) -> tuple[float, float]:
-    """Estimate optimal W (Width) and A (Negative decades) for the Logicle transform."""
+    """Estimate optimal A (Negative decades) while locking W for FlowJo equivalence."""
     valid = data[np.isfinite(data)]
     if len(valid) == 0:
-        return 0.5, 1.0  # FIX: Default to 1 negative decade to show -10^3
+        return 0.5, 1.0
 
     r = float(np.percentile(valid, 0.1))
     
+    # THE FIX: Lock W to 1.0
+    # In Logicle, W=0.5 means the linear region spans exactly 1 visual decade.
+    # This guarantees the 0 -> 10^3 distance perfectly matches the 10^3 -> 10^4 distance.
+    w_locked = 1.0
+
     # Even if data is mostly positive, enforce 1 negative decade 
-    # to match FlowJo's visual padding around the zero-tick.
     if r >= 0:
-        return 0.5, 1.0
+        return w_locked, 1.0
 
     try:
-        w = (m - np.log10(t / abs(r))) / 2.0
-        w = max(0.1, min(w, 2.0))
-        
+        # Only dynamically calculate A (negative space) to handle the sparse square
         a = -np.log10(abs(r)) if r < -10.0 else 1.0
-        # FIX: Force A to be at least 1.0 to guarantee space for the -10^3 tick
         a = max(1.0, min(a, 2.0))
         
-        return float(w), float(a)
+        return w_locked, float(a)
     except Exception:
         return 0.5, 1.0

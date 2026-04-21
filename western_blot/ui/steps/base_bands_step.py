@@ -3,7 +3,7 @@
 from __future__ import annotations
 import logging
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QPushButton, QLabel, QHBoxLayout, QCheckBox
-from biopro.plugins.western_blot.ui.base import WizardStep, WizardPanel
+from biopro.sdk.ui import WizardStep, WizardPanel
 from biopro.plugins.western_blot.ui.steps.base_step import BaseStepWidget
 from biopro.ui.theme import Colors
 

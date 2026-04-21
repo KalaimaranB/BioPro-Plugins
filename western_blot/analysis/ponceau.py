@@ -76,29 +76,30 @@ def _band_intensity(band) -> float:
     return float(band.peak_height)
 
 
-class PonceauAnalyzer:
+from biopro.sdk.core import AnalysisBase, PluginState
+
+class PonceauAnalyzer(AnalysisBase):
     """Thin wrapper around WesternBlotAnalyzer for Ponceau S quantification.
-
-    Reuses the entire WB image-processing pipeline — there is no new
-    image analysis code here.  The only addition is ``get_loading_factors``,
-    which converts per-lane integrated intensities into normalisation
-    correction factors.
-
-    Attributes:
-        state:         The underlying ``AnalysisState`` (same as WB analyzer).
-        lane_mapping:  Mapping ``{ponceau_lane_idx: wb_lane_idx}``.
-                       Set by the UI after the user confirms lane correspondence.
-        mode:          ``"total"`` or ``"reference_band"``.
-        ref_band_indices: When mode is ``"reference_band"``, the per-lane
-                       band index chosen as the reference.
+    
+    Delegates background tasks to the inner WesternBlotAnalyzer.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, plugin_id: str = "western_blot") -> None:
+        super().__init__(plugin_id)
         # Delegate all image processing to WesternBlotAnalyzer
-        self._wb = WesternBlotAnalyzer()
+        self._wb = WesternBlotAnalyzer(plugin_id)
         self.lane_mapping: dict[int, int] = {}   # ponceau_idx → wb_idx
         self.mode: str = "reference_band"        # default matches prof protocol
         self.ref_band_indices: dict[int, int] = {}  # ponceau_lane_idx → band_idx
+
+    def run(self, state: PluginState) -> dict:
+        """Delegate background execution to the WB analyzer.
+        
+        Transfers transient task attributes before running.
+        """
+        self._wb.current_task_type = getattr(self, "current_task_type", "auto")
+        self._wb.current_task_params = getattr(self, "current_task_params", {})
+        return self._wb.run(state)
 
     # ── Expose WB analyzer interface transparently ────────────────────
 

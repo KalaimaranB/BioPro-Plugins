@@ -10,7 +10,7 @@ import logging
 from PyQt6.QtWidgets import (
     QCheckBox, QGroupBox, QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget, QHBoxLayout
 )
-from biopro.plugins.western_blot.ui.base import WizardPanel, WizardStep
+from biopro.sdk.ui import WizardPanel, WizardStep
 from biopro.plugins.western_blot.ui.steps.base_step import BaseStepWidget
 from biopro.ui.theme import Colors
 
@@ -247,33 +247,71 @@ class BaseLanesStep(WizardStep):
             self.run_detection(panel)
 
     def run_detection(self, panel: WizardPanel) -> None:
+        from biopro.core import task_scheduler
+        
         try:
             analyzer = self.get_analyzer(panel)
             num_lanes = None if self.chk_auto.isChecked() else self.spin_lanes.value()
-            lanes = analyzer.detect_lanes(
-                num_lanes=num_lanes,
-                smoothing_window=self.spin_smoothing.value(),
-            )
-            self.spin_lanes.blockSignals(True)
-            self.spin_lanes.setValue(len(lanes))
-            self.spin_lanes.blockSignals(False)
-
-            self.lbl_status.setText(f"✅  Detected {len(lanes)} lanes")
-            self.lbl_status.setStyleSheet(f"color: {Colors.SUCCESS};")
-            prefix = self._get_status_prefix()
-            panel.status_message.emit(f"{prefix}Detected {len(lanes)} lanes")
             
-            panel.lanes_detected.emit(lanes)
-            self._on_lanes_updated(len(lanes))
+            params = {
+                "num_lanes": num_lanes,
+                "smoothing_window": self.spin_smoothing.value(),
+            }
             
-            if self._canvas is not None and getattr(self._canvas, '_lane_edit_mode', False):
-                self._canvas.add_lane_overlays(lanes)
+            # Setup background task
+            analyzer.current_task_type = "detect_lanes"
+            analyzer.current_task_params = params
+            
+            self.btn_detect.setEnabled(False)
+            self.lbl_status.setText("⌛  Detecting lanes...")
+            self.lbl_status.setStyleSheet(f"color: {Colors.FG_PRIMARY};")
+            
+            task_id = task_scheduler.submit(analyzer, analyzer.state)
+            
+            def _on_finished(tid, results):
+                if tid != task_id: return
+                task_scheduler.task_finished.disconnect(_on_finished)
+                task_scheduler.task_error.disconnect(_on_error)
                 
-            self._panel.state_changed.emit()
+                lanes = results.get("lanes", [])
+                analyzer.state.lanes = lanes
+                
+                self.btn_detect.setEnabled(True)
+                self.spin_lanes.blockSignals(True)
+                self.spin_lanes.setValue(len(lanes))
+                self.spin_lanes.blockSignals(False)
+
+                self.lbl_status.setText(f"✅  Detected {len(lanes)} lanes")
+                self.lbl_status.setStyleSheet(f"color: {Colors.SUCCESS};")
+                
+                prefix = self._get_status_prefix()
+                panel.status_message.emit(f"{prefix}Detected {len(lanes)} lanes")
+                panel.lanes_detected.emit(lanes)
+                self._on_lanes_updated(len(lanes))
+                
+                if self._canvas is not None and getattr(self._canvas, '_lane_edit_mode', False):
+                    self._canvas.add_lane_overlays(lanes)
+                    
+                self._panel.state_changed.emit()
+
+            def _on_error(tid, error_msg):
+                if tid != task_id: return
+                task_scheduler.task_finished.disconnect(_on_finished)
+                task_scheduler.task_error.disconnect(_on_error)
+                
+                self.btn_detect.setEnabled(True)
+                self.lbl_status.setText(f"❌  {error_msg}")
+                self.lbl_status.setStyleSheet(f"color: {Colors.ACCENT_DANGER};")
+                logger.error(f"Lane detection task error: {error_msg}")
+
+            task_scheduler.task_finished.connect(_on_finished)
+            task_scheduler.task_error.connect(_on_error)
+
         except Exception as e:
+            self.btn_detect.setEnabled(True)
             self.lbl_status.setText(f"❌  {e}")
             self.lbl_status.setStyleSheet(f"color: {Colors.ACCENT_DANGER};")
-            logger.exception("Lane detection error")
+            logger.exception("Lane detection error during submission")
 
     def _get_status_prefix(self) -> str: return ""
 

@@ -179,8 +179,10 @@ class SampleList(QWidget):
             self.sample_double_clicked.emit(sample_id)
 
     def _on_selection_changed(self, current: QTreeWidgetItem, previous: QTreeWidgetItem) -> None:
-        if current is None:
-            return
         sample_id = current.data(0, Qt.ItemDataRole.UserRole)
         if sample_id:
             self.selection_changed.emit(sample_id)
+
+    def cleanup(self) -> None:
+        """Clear tree state."""
+        self._tree.clear()

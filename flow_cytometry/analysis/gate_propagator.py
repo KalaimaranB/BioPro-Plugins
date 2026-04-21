@@ -36,22 +36,17 @@ from .state import FlowState
 logger = logging.getLogger(__name__)
 
 
-class _PropagationWorker(QObject):
-    """Worker that runs on a background QThread.
+from biopro.sdk.core import AnalysisBase, PluginState
+
+class _PropagationWorker(AnalysisBase):
+    """Worker that runs via TaskScheduler in the background.
 
     Receives a gate tree snapshot and a list of target samples,
-    then re-applies the tree to each sample and emits progress signals.
+    then re-applies the tree to each sample and returns progress statistics.
     """
 
-    # Emitted after each sample finishes (sample_id, stats_dict, new_gate_tree)
-    sample_updated = pyqtSignal(str, dict, object)
-    # Emitted when all samples are done
-    finished = pyqtSignal()
-    # Emitted on error
-    error = pyqtSignal(str)
-
-    def __init__(self, parent=None) -> None:
-        super().__init__(parent)
+    def __init__(self, plugin_id: str = "flow_cytometry") -> None:
+        super().__init__(plugin_id)
         self._gate_tree_dict: Optional[dict] = None
         self._target_samples: list[Sample] = []
 
@@ -60,37 +55,36 @@ class _PropagationWorker(QObject):
         gate_tree_dict: dict,
         target_samples: list[Sample],
     ) -> None:
-        """Set the work payload before starting the thread.
-
-        Args:
-            gate_tree_dict: Serialized gate tree from the source sample.
-            target_samples: List of samples to propagate to.
-        """
+        """Set the work payload before submitting to the scheduler."""
         self._gate_tree_dict = gate_tree_dict
         self._target_samples = list(target_samples)
 
-    def run(self) -> None:
-        """Execute the propagation — called when the thread starts."""
+    def run(self, state: PluginState) -> dict:
+        """Execute the propagation — called by the TaskScheduler."""
         if self._gate_tree_dict is None:
-            self.finished.emit()
-            return
+            return {}
 
+        results = {}
         for sample in self._target_samples:
             try:
                 stats, new_tree = self._apply_tree_to_sample(
                     self._gate_tree_dict, sample
                 )
-                self.sample_updated.emit(sample.sample_id, stats, new_tree)
+                # Store sample results by ID
+                results[sample.sample_id] = {
+                    "stats": stats,
+                    "tree": new_tree
+                }
             except Exception as exc:
                 logger.warning(
                     "Propagation failed for '%s': %s",
                     sample.display_name, exc,
                 )
-                self.error.emit(
-                    f"{sample.display_name}: {exc}"
-                )
+                # Fail hard if a sample fails, or continue? 
+                # Let's collect successes and report errors in return dict.
+                results[sample.sample_id] = {"error": str(exc)}
 
-        self.finished.emit()
+        return {"propagation_results": results}
 
     def _apply_tree_to_sample(
         self, tree_dict: dict, sample: Sample
@@ -199,16 +193,7 @@ class _PropagationWorker(QObject):
 
 
 class GatePropagator(QObject):
-    """Debounced gate propagation manager.
-
-    Usage from ``FlowCytometryPanel``::
-
-        propagator = GatePropagator(state)
-        gate_controller.propagation_requested.connect(
-            propagator.request_propagation
-        )
-        propagator.sample_updated.connect(sample_tree.update_gate_stats)
-        propagator.propagation_complete.connect(on_done)
+    """Debounced gate propagation manager using TaskScheduler.
 
     Signals:
         sample_updated(sample_id, stats_dict, new_tree):
@@ -237,33 +222,23 @@ class GatePropagator(QObject):
         self._pending_gate_id: Optional[str] = None
         self._pending_source_id: Optional[str] = None
 
-        # Background thread
-        self._thread: Optional[QThread] = None
-        self._worker: Optional[_PropagationWorker] = None
+        self._active_task_id: Optional[str] = None
 
     def request_propagation(
         self, gate_id: str, source_sample_id: str
     ) -> None:
-        """Request gate propagation with debouncing.
-
-        Multiple rapid calls (e.g., during gate dragging) are coalesced
-        into a single execution after ``DEBOUNCE_MS`` milliseconds of
-        inactivity.
-
-        Args:
-            gate_id:           The gate that changed.
-            source_sample_id:  The sample the gate was changed on.
-        """
+        """Request gate propagation with debouncing."""
         self._mutex.lock()
         self._pending_gate_id = gate_id
         self._pending_source_id = source_sample_id
         self._mutex.unlock()
 
-        # Reset the debounce timer
         self._timer.start()
 
     def _execute_propagation(self) -> None:
         """Execute the pending propagation (called after debounce)."""
+        from biopro.core import task_scheduler
+        
         self._mutex.lock()
         source_id = self._pending_source_id
         self._pending_gate_id = None
@@ -277,55 +252,62 @@ class GatePropagator(QObject):
         if source is None:
             return
 
-        # Serialize the source gate tree
         tree_dict = source.gate_tree.to_dict()
-
-        # Find target samples (same group, or all if no group)
         targets = self._find_targets(source_id)
         if not targets:
             self.propagation_complete.emit()
             return
 
-        # Stop any previous thread
-        self._stop_thread()
+        # Cancel previous if still running? Better to let scheduler manage.
+        
+        worker = _PropagationWorker()
+        worker.configure(tree_dict, targets)
+        
+        task_id = task_scheduler.submit(worker, self._state)
+        self._active_task_id = task_id
+        
+        def _on_finished(tid, results):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_finished)
+            task_scheduler.task_error.disconnect(_on_error)
+            
+            propagation_results = results.get("propagation_results", {})
+            for sid, res in propagation_results.items():
+                if "error" in res:
+                    logger.warning(f"Propagator error for {sid}: {res['error']}")
+                    continue
+                self._on_sample_updated(sid, res["stats"], res["tree"])
+            
+            self.propagation_complete.emit()
+            logger.debug("Gate propagation complete.")
 
-        # Create worker + thread
-        self._thread = QThread()
-        self._worker = _PropagationWorker()
-        self._worker.configure(tree_dict, targets)
-        self._worker.moveToThread(self._thread)
+        def _on_error(tid, error_msg):
+            if tid != task_id: return
+            task_scheduler.task_finished.disconnect(_on_finished)
+            task_scheduler.task_error.disconnect(_on_error)
+            logger.error(f"Gate propagation task failed: {error_msg}")
+            self.propagation_complete.emit()
 
-        # Wire signals
-        self._thread.started.connect(self._worker.run)
-        self._worker.sample_updated.connect(self._on_sample_updated)
-        self._worker.finished.connect(self._on_finished)
-        self._worker.finished.connect(self._thread.quit)
-
-        self._thread.start()
+        task_scheduler.task_finished.connect(_on_finished)
+        task_scheduler.task_error.connect(_on_error)
 
         logger.info(
-            "Propagating gates from '%s' to %d samples.",
+            "Propagating gates from '%s' to %d samples via TaskScheduler.",
             source.display_name, len(targets),
         )
 
     def _find_targets(self, source_id: str) -> list[Sample]:
-        """Find all target samples for propagation.
-
-        Targets are samples in the same group(s) as the source,
-        excluding the source itself.
-        """
+        """Find all target samples for propagation."""
         source = self._state.experiment.samples.get(source_id)
         if source is None:
             return []
 
         target_ids: set[str] = set()
 
-        # Check groups
         for group in self._state.experiment.groups.values():
             if source_id in group.sample_ids:
                 target_ids.update(group.sample_ids)
 
-        # If not in any group, propagate to all samples
         if not target_ids:
             target_ids = set(self._state.experiment.samples.keys())
 
@@ -345,18 +327,7 @@ class GatePropagator(QObject):
             sample.gate_tree = new_tree
         self.sample_updated.emit(sample_id, stats, new_tree)
 
-    def _on_finished(self) -> None:
-        """Clean up after propagation completes."""
-        self.propagation_complete.emit()
-        logger.debug("Gate propagation complete.")
-
-    def _stop_thread(self) -> None:
-        """Stop any running propagation thread."""
-        if self._thread is not None and self._thread.isRunning():
-            self._thread.quit()
-            self._thread.wait(1000)
-
     def cleanup(self) -> None:
-        """Clean up resources. Call before destruction."""
+        """Clean up resources."""
         self._timer.stop()
-        self._stop_thread()
+        # Active tasks will be managed by TaskScheduler on shutdown

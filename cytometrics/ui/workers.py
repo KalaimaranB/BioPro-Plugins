@@ -1,23 +1,16 @@
-"""Background workers and threading utilities for CytoMetrics."""
-
 import logging
 import requests
+import sys
 from pathlib import Path
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, pyqtSignal
 
+logger = logging.getLogger(__name__)
 
 class InterceptorSignals(QObject):
     """Helper class to hold PyQt signals for the standard logging handler."""
     progress_signal = pyqtSignal(int)
     status_signal = pyqtSignal(str)
 
-
-import logging
-from PyQt6.QtCore import QObject, pyqtSignal, QThread
-
-
-import sys
-from PyQt6.QtCore import QThread, pyqtSignal, QObject
 
 class StreamCatcher(QObject):
     """Intercepts terminal output (stderr) so we can see what Cellpose is actually saying."""
@@ -57,114 +50,117 @@ class CellposeLogInterceptor(logging.Handler):
             self.signals.progress_signal.emit(80)
 
 
-class PipelineWorker(QThread):
-    progress = pyqtSignal(int)
-    status = pyqtSignal(str)
-    finished = pyqtSignal(list)
-    error = pyqtSignal(str)
+from biopro.sdk.core import AnalysisBase, PluginState
 
-    def __init__(self, pipeline, image_stack, params, scale):
-        super().__init__()
+class CytoPipelineWorker(AnalysisBase):
+    """Worker that runs the AI segmentation pipeline via TaskScheduler."""
+
+    def __init__(self, plugin_id: str = "cytometrics") -> None:
+        super().__init__(plugin_id)
+        self.pipeline = None
+        self.image_stack = None
+        self.params = {}
+        self.scale = 1.0
+
+    def configure(self, pipeline, image_stack, params, scale):
         self.pipeline = pipeline
         self.image_stack = image_stack
         self.params = params
         self.scale = scale
 
-    def run(self):
-        self.progress.emit(10)
-        self.status.emit("Starting AI...")
+    def run(self, state: PluginState) -> dict:
+        """Execute the segmentation on a background thread."""
+        if not self.pipeline:
+            return {"error": "No pipeline configured"}
 
         # 1. Hijack the terminal's standard error stream
         original_stderr = sys.stderr
         catcher = StreamCatcher(original_stderr)
-
-        # Every time Cellpose prints to the terminal, show it on the Run Button!
-        catcher.text_written.connect(lambda msg: self.status.emit(f"DEBUG: {msg[:30]}..."))
+        # We can't easily emit signals from here to the exact task, 
+        # but the catcher remains for stdout visibility.
         sys.stderr = catcher
 
         try:
             # 2. Run the AI
             result_cells = self.pipeline.run(self.image_stack, self.params, self.scale)
-
-            self.progress.emit(95)
-            self.status.emit("Finishing up...")
-            self.finished.emit(result_cells)
+            return {"result_cells": result_cells}
 
         except Exception as e:
-            self.error.emit(str(e))
+            logger.exception("CytoMetrics Pipeline Error")
+            return {"error": str(e)}
 
         finally:
             # 3. Put the terminal back to normal!
             sys.stderr = original_stderr
-            self.progress.emit(100)
 
 
-class ModelDownloadWorker(QThread):
-    """Safely downloads the Cellpose model in the background without freezing the UI."""
-    progress = pyqtSignal(int)
-    finished = pyqtSignal(bool, str)
+# ── Functional Task Logic (Utilities) ─────────────────────────────────
 
-    def run(self):
-        model_dir = Path.home() / ".cellpose" / "models"
-        model_dir.mkdir(parents=True, exist_ok=True)
-        model_path = model_dir / "cyto3"
-        
-        url = "https://www.cellpose.org/models/cyto3"
+def download_model_func(progress_callback=None):
+    """Logic moved from ModelDownloadWorker for use with FunctionalTask."""
+    model_dir = Path.home() / ".cellpose" / "models"
+    model_dir.mkdir(parents=True, exist_ok=True)
+    model_path = model_dir / "cyto3"
+    
+    url = "https://www.cellpose.org/models/cyto3"
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
 
-        try:
-            # We add a "User-Agent" header to disguise the script as a standard web browser
-            headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-            response = requests.get(url, stream=True, headers=headers)
-            response.raise_for_status() # Instantly catches 404 or 403 errors
-            
-            total_size = int(response.headers.get('content-length', 0))
-            downloaded = 0
-            
-            # Write the file to disk in chunks so we don't blow up the RAM
-            with open(model_path, 'wb') as f:
-                for chunk in response.iter_content(chunk_size=8192):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        
-                        # Calculate and emit the percentage
-                        if total_size > 0:
-                            percent = int((downloaded / total_size) * 100)
-                            self.progress.emit(min(max(percent, 0), 100))
-                            
-            self.finished.emit(True, "Model downloaded successfully.")
-            
-        except requests.exceptions.RequestException as e:
-            # Grabs a clean error message if the server blocks it or the wifi drops
-            self.finished.emit(False, f"Network Error: {str(e)}")
-        except Exception as e:
-            self.finished.emit(False, f"System Error: {str(e)}")
+    response = requests.get(url, stream=True, headers=headers)
+    response.raise_for_status()
+    
+    total_size = int(response.headers.get('content-length', 0))
+    downloaded = 0
+    
+    with open(model_path, 'wb') as f:
+        for chunk in response.iter_content(chunk_size=32768): # Larger chunks for speed
+            if chunk:
+                f.write(chunk)
+                downloaded += len(chunk)
+                if progress_callback and total_size > 0:
+                    percent = int((downloaded / total_size) * 100)
+                    progress_callback(percent)
+                    
+    return {"success": True, "path": str(model_path)}
 
-class LibraryLoaderWorker(QThread):
-    """Safely imports heavy ML libraries on a background thread so the UI loads instantly."""
-    finished = pyqtSignal(bool, object, str)
 
-    def run(self):
-        try:
-            # --- Image libraries (cv2 / numpy / PIL are slow to import cold) ---
-            import cv2          # noqa: F401  — registers in sys.modules so callers can use it
-            import numpy        # noqa: F401
-            from PIL import Image  # noqa: F401
+def load_libraries_func():
+    """Logic moved from LibraryLoaderWorker for use with FunctionalTask."""
+    # --- Image libraries ---
+    import cv2
+    import numpy
+    from PIL import Image
 
-            # --- Lightweight CV pipelines (they import cv2/numpy themselves) ---
-            from biopro.plugins.cytometrics.analysis.pipelines.otsu import OtsuPipeline
-            from biopro.plugins.cytometrics.analysis.pipelines.watershed import WatershedPipeline
+    # --- Lightweight CV pipelines ---
+    from ..analysis.pipelines.otsu import OtsuPipeline
+    from ..analysis.pipelines.watershed import WatershedPipeline
 
-            # --- Heavy AI stack ---
-            import torch
-            from cellpose import models  # noqa: F401
-            from biopro.plugins.cytometrics.analysis.pipelines.cellpose_pipeline import CellposePipeline
+    # --- Heavy AI stack ---
+    import torch
+    from cellpose import models
+    from ..analysis.pipelines.cellpose_pipeline import CellposePipeline
 
-            pipelines = {
-                "otsu":      OtsuPipeline(),
-                "watershed": WatershedPipeline(),
-                "cellpose":  CellposePipeline(),
-            }
-            self.finished.emit(True, pipelines, "All libraries loaded")
-        except Exception as e:
-            self.finished.emit(False, None, str(e))
+    pipelines = {
+        "otsu":      OtsuPipeline(),
+        "watershed": WatershedPipeline(),
+        "cellpose":  CellposePipeline(),
+    }
+    return {"success": True, "pipelines": pipelines}
+
+
+# ── COMPATIBILITY WRAPPERS FOR MAIN_PANEL.PY ──────────────────────────
+
+from biopro.core.task_scheduler import FunctionalTask
+
+class PipelineWorker(CytoPipelineWorker):
+    """Alias for main_panel.py imports."""
+    pass
+
+class ModelDownloadWorker(FunctionalTask):
+    """Wrapper to maintain class-based interface for legacy imports."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(download_model_func, *args, **kwargs)
+
+class LibraryLoaderWorker(FunctionalTask):
+    """Wrapper to maintain class-based interface for legacy imports."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(load_libraries_func, *args, **kwargs)
