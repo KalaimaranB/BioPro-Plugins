@@ -293,9 +293,6 @@ class FlowCytometryPanel(PluginBase):
         # ── Gate controller → UI updates ──────────────────────────────
         self._gate_controller.gate_added.connect(self._on_gate_added)
         self._gate_controller.gate_removed.connect(self._on_gate_removed)
-        self._gate_controller.gate_renamed.connect(
-            lambda sid, nid: self._gate_hierarchy.refresh()
-        )
         self._gate_controller.gate_stats_updated.connect(
             self._on_gate_stats_updated
         )
@@ -346,7 +343,6 @@ class FlowCytometryPanel(PluginBase):
 
     def _on_gate_added(self, sample_id: str, node_id: str) -> None:
         """Gate added to model → refresh tree and canvas overlays."""
-        self._gate_hierarchy.refresh()
         self._refresh_gate_overlays(sample_id)
         self.state_changed.emit()
         
@@ -355,7 +351,6 @@ class FlowCytometryPanel(PluginBase):
 
     def _on_gate_removed(self, sample_id: str, node_id: str) -> None:
         """Gate removed → refresh tree and canvas."""
-        self._gate_hierarchy.refresh()
         self._refresh_gate_overlays(sample_id)
         self.state_changed.emit()
 
@@ -499,8 +494,6 @@ class FlowCytometryPanel(PluginBase):
 
     def _on_samples_loaded(self) -> None:
         """Callback when new FCS files are loaded via the ribbon."""
-        self._sample_list.refresh()
-        self._gate_hierarchy.refresh()
         self._groups_panel.refresh()
         self.state_changed.emit()
         self.status_message.emit(

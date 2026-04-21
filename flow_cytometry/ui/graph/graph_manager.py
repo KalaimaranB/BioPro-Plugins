@@ -27,6 +27,7 @@ from biopro.ui.theme import Colors, Fonts
 
 from .graph_window import GraphWindow
 from ...analysis.state import FlowState
+from ...analysis.event_bus import Event, EventType
 from ...analysis.gating import Gate, GateNode
 
 logger = logging.getLogger(__name__)
@@ -55,6 +56,21 @@ class GraphManager(QWidget):
         self._graphs: dict[str, GraphWindow] = {}   # key: "sample_id:gate_id"
         self._current_tool = "select"
         self._setup_ui()
+        self._setup_events()
+
+    def _setup_events(self) -> None:
+        """Subscribe to relevant state events."""
+        self._state.event_bus.subscribe(EventType.GATE_RENAMED, self._on_bus_event)
+
+    def _on_bus_event(self, event: Event) -> None:
+        """Handle incoming bus events."""
+        if event.type == EventType.GATE_RENAMED:
+            # Refresh all tab labels for the given sample
+            sample_id = event.data.get("sample_id")
+            for i in range(self._tabs.count()):
+                graph = self._tabs.widget(i)
+                if isinstance(graph, GraphWindow) and graph.sample_id == sample_id:
+                    self._update_tab_label(i)
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -74,10 +90,11 @@ class GraphManager(QWidget):
             f"QTabBar::tab {{"
             f"  background: {Colors.BG_DARK};"
             f"  color: {Colors.FG_SECONDARY};"
-            f"  padding: 6px 14px;"
+            f"  padding: 6px 14px 6px 12px;"
             f"  border: none;"
             f"  border-bottom: 2px solid transparent;"
             f"  font-size: {Fonts.SIZE_SMALL}px;"
+            f"  margin-right: 2px;"
             f"}}"
             f"QTabBar::tab:selected {{"
             f"  color: {Colors.FG_PRIMARY};"
@@ -89,8 +106,16 @@ class GraphManager(QWidget):
             f"  background: {Colors.BG_MEDIUM};"
             f"}}"
             f"QTabBar::close-button {{"
-            f"  image: none;"
-            f"  subcontrol-position: right;"
+            f"  background: {Colors.BG_MEDIUM};"
+            f"  border: 1px solid {Colors.BORDER};"
+            f"  border-radius: 3px;"
+            f"  margin: 2px 4px;"
+            f"  padding: 2px;"
+            f"  subcontrol-position: right center;"
+            f"}}"
+            f"QTabBar::close-button:hover {{"
+            f"  background: {Colors.ACCENT_PRIMARY};"
+            f"  border: 1px solid {Colors.ACCENT_PRIMARY};"
             f"}}"
         )
 
@@ -160,6 +185,9 @@ class GraphManager(QWidget):
             idx = self._tabs.indexOf(graph)
             if idx >= 0:
                 self._tabs.setCurrentIndex(idx)
+                # Ensure it's up to date
+                self._update_tab_label(idx)
+                graph._update_breadcrumb()
             return
 
         # Create new graph window
@@ -180,17 +208,30 @@ class GraphManager(QWidget):
         graph.axis_scale_sync_requested.connect(self._on_axis_scale_sync)
         graph.navigation_requested.connect(self.navigate_active_graph)
 
-        tab_label = sample.display_name
-        if node_id:
-            node = sample.gate_tree.find_node_by_id(node_id)
-            if node:
-                tab_label = f"{sample.display_name} › {node.name}"
-
-        idx = self._tabs.addTab(graph, tab_label)
+        idx = self._tabs.addTab(graph, "")
+        self._update_tab_label(idx)
         self._tabs.setCurrentIndex(idx)
 
         self._update_visibility()
         logger.info("Opened graph for %s (population=%s)", sample.display_name, node_id)
+
+    def _update_tab_label(self, index: int) -> None:
+        """Regenerate the tab title for a specific index."""
+        graph = self._tabs.widget(index)
+        if not isinstance(graph, GraphWindow):
+            return
+
+        sample = self._state.experiment.samples.get(graph.sample_id)
+        if not sample:
+            return
+
+        tab_label = sample.display_name
+        if graph.node_id:
+            node = sample.gate_tree.find_node_by_id(graph.node_id)
+            if node:
+                tab_label = f"{sample.display_name} › {node.name}"
+        
+        self._tabs.setTabText(index, tab_label)
 
     def set_drawing_mode(self, tool_name: str) -> None:
         """Set the drawing mode on all open graph windows.

@@ -147,8 +147,10 @@ class FlowCanvas(FigureCanvasQTAgg):
     gate_modified = pyqtSignal(str)         # gate_id
     gate_selected = pyqtSignal(object)      # gate_id or None
     render_requested = pyqtSignal()         # Emitted on context menu "Render"
+    quality_mode_changed = pyqtSignal(str)  # "optimized" or "transparent"
+    gate_preview_emitted = pyqtSignal(object) # Temporary gate object
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, state: Optional[FlowState] = None, parent=None) -> None:
         # Apply BioPro theme
         import matplotlib
         for key, val in _MPL_STYLE.items():
@@ -158,6 +160,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._fig.set_facecolor(_PLOT_BG)
         super().__init__(self._fig)
 
+        self._state = state
         self.setParent(parent)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -214,8 +217,10 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._selected_gate_id: Optional[str] = None
 
         # ── Rendering constraints ─────────────────────────────────────
+        self._render_quality: str = "optimized"  # "optimized" or "transparent"
         self._max_events: Optional[int] = 100_000  # Default subsampling limit
         self._quality_multiplier: float = 1.0     # Grid resolution scaler
+        self._use_cache: bool = True              # Use bitmap caching for fast redraws
 
         # ── Gate editing ──────────────────────────────────────────────
         self._editing_gate_id: Optional[str] = None
@@ -373,6 +378,47 @@ class FlowCanvas(FigureCanvasQTAgg):
         """Programmatically select a gate overlay."""
         self._selected_gate_id = gate_id
         self._render_gate_layer()
+
+    def _on_quality_mode_changed(self, mode: str) -> None:
+        """Handle render quality changes.
+        
+        Optimized: 100k events, 1x resolution, caching enabled.
+        Full: All events, 2x resolution, caching disabled.
+        """
+        self._render_quality = mode
+        if mode == "transparent": # "Full" mode
+            self._max_events = None
+            self._quality_multiplier = 2.0
+            self._use_cache = False
+        else: # "optimized"
+            self._max_events = 100_000
+            self._quality_multiplier = 1.0
+            self._use_cache = True
+        
+        # Notify subscribers (like GraphWindow) that quality changed
+        self.quality_mode_changed.emit(mode)
+        self.redraw()
+
+    def _auto_range_axes(self) -> None:
+        """Request parent window to re-calculate auto-range for active axes."""
+        # This is typically called when switching to Full quality
+        # to ensure the plot is centered on the real data boundaries.
+        parent = self.parent()
+        while parent and not hasattr(parent, "_calculate_auto_range"):
+            parent = parent.parent()
+            
+        if parent:
+            # We use the parent's logic to compute and apply new scales
+            x_min, x_max = parent._calculate_auto_range("x")
+            y_min, y_max = parent._calculate_auto_range("y")
+            
+            # Update local scales (parent will also sync globally)
+            parent._x_scale.min_val = x_min
+            parent._x_scale.max_val = x_max
+            parent._y_scale.min_val = y_min
+            parent._y_scale.max_val = y_max
+            
+            self.set_scales(parent._x_scale, parent._y_scale)
 
     # ── Batch update ───────────────────────────────────────────────
 
@@ -1228,6 +1274,38 @@ class FlowCanvas(FigureCanvasQTAgg):
             )
             self._ax.add_patch(self._rubber_band_patch)
 
+        # Publish preview event for Group Preview
+        if self._state and self._state.event_bus:
+            # Create a temporary gate object for preview
+            temp_gate = None
+            if self._drawing_mode == GateDrawingMode.RECTANGLE:
+                temp_gate = RectangleGate(
+                    self._x_param, self._y_param,
+                    x_min=min(x0, x1), x_max=max(x0, x1),
+                    y_min=min(y0, y1), y_max=max(y0, y1)
+                )
+            elif self._drawing_mode == GateDrawingMode.ELLIPSE:
+                temp_gate = EllipseGate(
+                    self._x_param, self._y_param,
+                    center_x=(x0 + x1)/2, center_y=(y0 + y1)/2,
+                    width=abs(x1 - x0), height=abs(y1 - y0)
+                )
+            elif self._drawing_mode == GateDrawingMode.RANGE:
+                ylim = self._ax.get_ylim()
+                temp_gate = RectangleGate(
+                    self._x_param, None,
+                    x_min=min(x0, x1), x_max=max(x0, x1),
+                    y_min=ylim[0], y_max=ylim[1]
+                )
+            
+            if temp_gate:
+                from ...analysis.event_bus import Event, EventType
+                self._state.event_bus.publish(Event(
+                    EventType.GATE_PREVIEW,
+                    data={"gate": temp_gate, "sample_id": getattr(self, '_sample_id', None)},
+                    source="flow_canvas"
+                ))
+
         self.draw_idle()
 
     def _on_release(self, event) -> None:
@@ -1523,8 +1601,64 @@ class FlowCanvas(FigureCanvasQTAgg):
             f"QMenu::item:selected {{ background: {Colors.BG_MEDIUM}; }}"
         )
 
-        render_act = QAction("🖼️  Render Full Quality...", self)
-        render_act.triggered.connect(self.render_requested.emit)
-        menu.addAction(render_act)
+        # Copy to clipboard
+        copy_act = QAction("📋  Copy to Clipboard (PNG)", self)
+        copy_act.triggered.connect(self._copy_to_clipboard)
+        menu.addAction(copy_act)
+
+        menu.addSeparator()
+
+        # Download submenu
+        download_menu = menu.addMenu("💾  Download")
+        for fmt, suffix in [("PNG", "png"), ("PDF", "pdf"), ("SVG", "svg")]:
+            action = QAction(fmt, self)
+            action.triggered.connect(lambda checked=False, f=suffix: self._on_download_plot(f))
+            download_menu.addAction(action)
 
         menu.exec(self.mapToGlobal(pos))
+
+    def _copy_to_clipboard(self) -> None:
+        """Render figure to PNG in memory and copy to system clipboard."""
+        from PyQt6.QtGui import QImage, QClipboard
+        from PyQt6.QtWidgets import QApplication
+        import io
+
+        try:
+            buf = io.BytesIO()
+            self._fig.savefig(buf, format='png', dpi=96, bbox_inches='tight')
+            buf.seek(0)
+            image = QImage()
+            image.loadFromData(buf.read())
+
+            clipboard = QApplication.clipboard()
+            clipboard.setImage(image)
+            logger.info("Plot copied to clipboard")
+        except Exception as e:
+            logger.error(f"Failed to copy plot: {e}")
+
+    def _on_download_plot(self, fmt: str) -> None:
+        """Download plot in specified format (png, pdf, or svg)."""
+        from PyQt6.QtWidgets import QFileDialog
+        from datetime import datetime
+
+        # Generate default filename
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"flow_plot_{timestamp}.{fmt}"
+
+        file_path, _ = QFileDialog.getSaveFileName(
+            self,
+            f"Save plot as {fmt.upper()}",
+            default_name,
+            f"{fmt.upper()} (*.{fmt})"
+        )
+
+        if not file_path:
+            return
+
+        try:
+            # DPI settings for different formats
+            dpi = 300 if fmt == "pdf" else 150
+            self._fig.savefig(file_path, format=fmt, dpi=dpi, bbox_inches='tight')
+            logger.info(f"Plot saved to {file_path}")
+        except Exception as e:
+            logger.error(f"Failed to save plot: {e}")

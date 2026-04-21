@@ -27,6 +27,7 @@ from PyQt6.QtWidgets import (
     QCheckBox,
     QLineEdit,
     QPushButton,
+    QSplitter,
 )
 
 from biopro.ui.theme import Colors, Fonts
@@ -34,6 +35,7 @@ from biopro.ui.theme import Colors, Fonts
 from ...analysis.state import FlowState
 from ...analysis.experiment import Sample, SampleRole
 from ...analysis.gate_controller import GateController
+from .group_preview import GroupPreviewPanel
 
 logger = logging.getLogger(__name__)
 
@@ -71,7 +73,12 @@ class PropertiesPanel(QWidget):
         )
         layout.addWidget(self._header)
 
-        # Scrollable content
+        # Splitter to allow user to resize the two panels
+        self._splitter = QSplitter(Qt.Orientation.Vertical)
+        self._splitter.setHandleWidth(2)
+        self._splitter.setStyleSheet(f"QSplitter::handle {{ background: {Colors.BORDER}; }}")
+
+        # Scrollable content (Top)
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
         scroll.setFrameShape(QScrollArea.Shape.NoFrame)
@@ -79,12 +86,19 @@ class PropertiesPanel(QWidget):
 
         self._content = QWidget()
         self._content_layout = QVBoxLayout(self._content)
-        self._content_layout.setContentsMargins(12, 12, 12, 12)
         self._content_layout.setSpacing(8)
         self._content_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
-
         scroll.setWidget(self._content)
-        layout.addWidget(scroll, stretch=1)
+        self._splitter.addWidget(scroll)
+
+        # Group Preview section (Bottom)
+        self._group_preview = GroupPreviewPanel(self._state)
+        self._splitter.addWidget(self._group_preview)
+        
+        # Set initial sizes (1/3 properties, 2/3 preview as requested)
+        self._splitter.setSizes([300, 600])
+
+        layout.addWidget(self._splitter)
 
         # Initial state
         self._show_empty()
@@ -100,6 +114,9 @@ class PropertiesPanel(QWidget):
         """
         self._current_sample_id = sample_id
         self._current_node_id = gate_id
+        
+        # Update preview context
+        self._group_preview.update_context(sample_id, gate_id)
 
         sample = self._state.experiment.samples.get(sample_id)
         if sample is None:

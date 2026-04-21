@@ -21,6 +21,7 @@ from biopro.shared.ui.ui_components import PrimaryButton, SecondaryButton
 
 from ...analysis.state import FlowState
 from ...analysis.fcs_io import load_fcs
+from ...analysis.event_bus import Event, EventType
 from ...analysis.experiment import (
     Experiment,
     Sample,
@@ -179,6 +180,11 @@ class WorkspaceRibbon(QWidget):
 
         if loaded_count > 0:
             self.samples_loaded.emit()
+            self._state.event_bus.publish(Event(
+                type=EventType.SAMPLE_LOADED,
+                data={"count": loaded_count},
+                source="WorkspaceRibbon"
+            ))
             logger.info("Loaded %d FCS files.", loaded_count)
 
     def _on_load_template(self) -> None:
@@ -200,6 +206,13 @@ class WorkspaceRibbon(QWidget):
             template = WorkflowTemplate.load(Path(path))
             self._state.experiment.apply_template(template)
             self.template_load_requested.emit()
+            
+            # Publish event
+            self._state.event_bus.publish(Event(
+                type=EventType.SAMPLE_LOADED, # Template load usually results in samples being re-registered or refreshed
+                data={"template_name": template.name},
+                source="WorkspaceRibbon"
+            ))
             logger.info("Applied template: %s", template.name)
         except Exception as exc:
             logger.error("Failed to load template %s: %s", path, exc)

@@ -21,6 +21,7 @@ from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.state import FlowState
 from ...analysis.gating import GateNode
+from ...analysis.event_bus import Event, EventType
 
 
 _POPULATION_ICONS = ["◆", "◇", "▸", "▹", "›"]
@@ -57,10 +58,23 @@ class GateHierarchy(QWidget):
         super().__init__(parent)
         self._state = state
         self._active_sample_id: str | None = None
-        self._is_global_mode = False
+        self._is_global_mode = True
         
         self._gate_item_map: dict[str, QTreeWidgetItem] = {}
         self._setup_ui()
+        self._setup_events()
+
+    def _setup_events(self) -> None:
+        """Subscribe to relevant state events."""
+        self._state.event_bus.subscribe(EventType.GATE_CREATED, self._on_event)
+        self._state.event_bus.subscribe(EventType.GATE_RENAMED, self._on_event)
+        self._state.event_bus.subscribe(EventType.GATE_DELETED, self._on_event)
+
+    def _on_event(self, event: Event) -> None:
+        """Handle incoming bus events."""
+        # For simplicity in this phase, any gate change triggers a full refresh.
+        # In a high-performance scenario, we'd update only the affected nodes.
+        self.refresh()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -99,7 +113,7 @@ class GateHierarchy(QWidget):
                 }}
             """)
         
-        self._btn_current.setChecked(True)
+        self._btn_global.setChecked(True)
         self._toggle_group = QButtonGroup(self)
         self._toggle_group.addButton(self._btn_current, 0)
         self._toggle_group.addButton(self._btn_global, 1)

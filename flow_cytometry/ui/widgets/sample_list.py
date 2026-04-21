@@ -17,6 +17,7 @@ from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.experiment import Sample
 from ...analysis.state import FlowState
+from ...analysis.event_bus import Event, EventType
 
 
 # Icons and Colors from the original SampleTree
@@ -51,6 +52,15 @@ class SampleList(QWidget):
         self._state = state
         self._active_group_filter: str = "__all__"
         self._setup_ui()
+        self._setup_events()
+
+    def _setup_events(self) -> None:
+        """Subscribe to relevant state events."""
+        self._state.event_bus.subscribe(EventType.SAMPLE_LOADED, self._on_event)
+
+    def _on_event(self, event: Event) -> None:
+        """Handle incoming bus events."""
+        self.refresh()
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -179,6 +189,8 @@ class SampleList(QWidget):
             self.sample_double_clicked.emit(sample_id)
 
     def _on_selection_changed(self, current: QTreeWidgetItem, previous: QTreeWidgetItem) -> None:
+        if current is None:
+            return
         sample_id = current.data(0, Qt.ItemDataRole.UserRole)
         if sample_id:
             self.selection_changed.emit(sample_id)

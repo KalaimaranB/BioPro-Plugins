@@ -27,6 +27,7 @@ import numpy as np
 from .compensation import CompensationMatrix
 from .experiment import Experiment, Sample, SampleRole, WorkflowTemplate
 from .scaling import AxisScale
+from .event_bus import EventBus, Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -64,6 +65,28 @@ class FlowState(PluginState):
     
     # ── Transformation State ──────────────────────────────────────────
     channel_scales: dict[str, AxisScale] = field(default_factory=dict)
+    
+    # ── Event System ──────────────────────────────────────────────────
+    # All state changes are published as events via this bus
+    event_bus: EventBus = field(default_factory=EventBus)
+    
+    # ── Rendering preferences ─────────────────────────────────────────
+    auto_range_on_quality: bool = True  # Auto-update axes when render mode changes
+    _render_quality: str = field(default="optimized")
+
+    @property
+    def render_quality(self) -> str:
+        return self._render_quality
+
+    @render_quality.setter
+    def render_quality(self, value: str) -> None:
+        if self._render_quality != value:
+            self._render_quality = value
+            self.event_bus.publish(Event(
+                type=EventType.RENDER_MODE_CHANGED,
+                data={"mode": value},
+                source="FlowState"
+            ))
 
     # ── Serialization ─────────────────────────────────────────────────
 

@@ -35,6 +35,7 @@ from .gating import (
 )
 from .statistics import compute_statistic, StatType
 from .state import FlowState
+from .event_bus import Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +144,18 @@ class GateController(QObject):
 
         self.gate_added.emit(sample_id, child_node.node_id)
         self.gate_stats_updated.emit(sample_id, child_node.node_id)
+
+        # Publish to EventBus
+        self._state.event_bus.publish(Event(
+            type=EventType.GATE_CREATED,
+            data={
+                "sample_id": sample_id,
+                "node_id": child_node.node_id,
+                "gate_id": gate.gate_id,
+                "name": child_node.name
+            },
+            source="GateController"
+        ))
 
         # Request propagation to other samples
         self.propagation_requested.emit(gate.gate_id, sample_id)
@@ -265,6 +278,19 @@ class GateController(QObject):
         self.gate_added.emit(sample_id, sibling.node_id)
         self.gate_stats_updated.emit(sample_id, sibling.node_id)
         
+        # Publish to EventBus
+        self._state.event_bus.publish(Event(
+            type=EventType.GATE_CREATED,
+            data={
+                "sample_id": sample_id,
+                "node_id": sibling.node_id,
+                "gate_id": node.gate.gate_id,
+                "name": sibling.name,
+                "is_split": True
+            },
+            source="GateController"
+        ))
+        
         logger.info("Split population created: '%s' from '%s'", sibling.name, node.name)
         return sibling.node_id
 
@@ -282,6 +308,17 @@ class GateController(QObject):
         node.parent.remove_child(node_id)
 
         self.gate_removed.emit(sample_id, node_id)
+        
+        # Publish to EventBus
+        self._state.event_bus.publish(Event(
+            type=EventType.GATE_DELETED,
+            data={
+                "sample_id": sample_id,
+                "node_id": node_id,
+                "gate_id": old_gate_id
+            },
+            source="GateController"
+        ))
         logger.info("Population %s removed from sample %s.", node_id, sample_id)
         return True
 
@@ -304,6 +341,17 @@ class GateController(QObject):
         node.name = new_name
         self.gate_renamed.emit(sample_id, node_id)
         self.gate_stats_updated.emit(sample_id, node_id)
+        
+        # Publish to EventBus
+        self._state.event_bus.publish(Event(
+            type=EventType.GATE_RENAMED,
+            data={
+                "sample_id": sample_id,
+                "node_id": node_id,
+                "new_name": new_name
+            },
+            source="GateController"
+        ))
         
         # Always trigger propagation on rename to ensure names persist across samples.
         # Find the root gate in this node's ancestry chain.

@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
 from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.state import FlowState
+from ...analysis.event_bus import Event, EventType
 from ...analysis.experiment import Sample
 from ...analysis.fcs_io import get_channel_marker_label
 from ...analysis.transforms import TransformType
@@ -101,6 +102,19 @@ class GraphWindow(QWidget):
         self._render_windows: list[RenderWindow] = []
 
         self._setup_ui()
+        self._setup_events()
+
+    def _setup_events(self) -> None:
+        """Subscribe to relevant state events."""
+        self._state.event_bus.subscribe(EventType.GATE_RENAMED, self._on_bus_event)
+
+    def _on_bus_event(self, event: Event) -> None:
+        """Handle incoming bus events."""
+        if event.type == EventType.GATE_RENAMED:
+            # Refresh if it's our sample and node
+            if event.data.get("sample_id") == self._sample_id:
+                # We update the breadcrumb even if it's a parent gate that was renamed
+                self._update_breadcrumb()
 
     @property
     def sample_id(self) -> str:
@@ -201,12 +215,56 @@ class GraphWindow(QWidget):
         )
         self._render_spinner.setVisible(False)
         axis_row.addWidget(self._render_spinner)
+        
+        # ── Render Quality Toggle ──
+        axis_row.addSpacing(16)
+        self._quality_btn_group = QHBoxLayout()
+        self._quality_btn_group.setSpacing(0)
+        
+        self._btn_opt = QPushButton("Optimized")
+        self._btn_full = QPushButton("Full")
+        
+        for i, btn in enumerate((self._btn_opt, self._btn_full)):
+            btn.setCheckable(True)
+            btn.setFixedHeight(22)
+            btn.setFixedWidth(65)
+            # Rounded corners only on the outer edges
+            radius = "4px"
+            border_radius = f"{radius} 0 0 {radius}" if i == 0 else f"0 {radius} {radius} 0"
+            btn.setStyleSheet(f"""
+                QPushButton {{
+                    background: {Colors.BG_MEDIUM};
+                    color: {Colors.FG_SECONDARY};
+                    border: 1px solid {Colors.BORDER};
+                    border-radius: {border_radius};
+                    font-size: 10px;
+                    font-weight: 600;
+                }}
+                QPushButton:hover {{
+                    background: {Colors.BG_DARK};
+                }}
+                QPushButton:checked {{
+                    background: {Colors.ACCENT_PRIMARY};
+                    color: {Colors.BG_DARKEST};
+                    border: 1px solid {Colors.ACCENT_PRIMARY};
+                }}
+            """)
+        
+        self._btn_opt.setChecked(self._state.render_quality == "optimized")
+        self._btn_full.setChecked(self._state.render_quality == "transparent")
+        
+        self._btn_opt.clicked.connect(lambda: self._set_render_quality("optimized"))
+        self._btn_full.clicked.connect(lambda: self._set_render_quality("transparent"))
+        
+        self._quality_btn_group.addWidget(self._btn_opt)
+        self._quality_btn_group.addWidget(self._btn_full)
+        axis_row.addLayout(self._quality_btn_group)
 
         axis_row.addStretch()
         layout.addLayout(axis_row)
 
         # ── Flow Canvas (the actual matplotlib plot) ──────────────────
-        self._canvas = FlowCanvas()
+        self._canvas = FlowCanvas(self._state)
         layout.addWidget(self._canvas, stretch=1)
 
         # Wire canvas signals
@@ -394,11 +452,26 @@ class GraphWindow(QWidget):
                 vmin, vmax = calculate_auto_range(events[y_ch].values, y_scale_active.transform_type)
                 y_scale_active.min_val, y_scale_active.max_val = float(vmin), float(vmax)
     
+        # ── PERSIST THE ESTIMATED SCALES ──
+        # This ensures the global state (and thus the Group Preview) 
+        # uses the same "Optimized" parameters as this window.
+        self._x_scale = x_scale_active.copy()
+        self._y_scale = y_scale_active.copy()
+        self._state.channel_scales[x_ch] = self._x_scale.copy()
+        self._state.channel_scales[y_ch] = self._y_scale.copy()
+
         self._canvas.begin_update()
         self._canvas.set_axes(x_ch, y_ch, x_label, y_label)
         self._canvas.set_scales(x_scale_active, y_scale_active)
         self._canvas.end_update()       # single redraw with correct axes+scales
         self._canvas.set_data(events)   # final redraw with gated data
+
+        # Notify the system (and Group Preview) that the scale has been finalized
+        self._state.event_bus.publish(Event(
+            type=EventType.AXIS_RANGE_CHANGED,
+            data={"channel_x": x_ch, "channel_y": y_ch},
+            source="GraphWindow"
+        ))
 
     def apply_axis_scale(self, channel_name: str, scale: AxisScale) -> None:
         """Apply an external scale setting if this graph uses that channel."""
@@ -438,12 +511,42 @@ class GraphWindow(QWidget):
         self._render_initial()
         self._render_spinner.setVisible(False)
         self.axis_changed.emit()
+        
+        # Publish to event bus for Group Preview sync
+        self._state.event_bus.publish(Event(
+            type=EventType.AXIS_PARAMS_CHANGED,
+            data={
+                "sample_id": self._sample_id,
+                "x_param": x_ch,
+                "y_param": y_ch
+            },
+            source="GraphWindow"
+        ))
 
     def _on_mode_changed(self, index: int) -> None:
         """Handle display mode changes."""
         mode = self._display_combo.currentData()
         if mode:
             self._canvas.set_display_mode(mode)
+
+    def _set_render_quality(self, mode: str) -> None:
+        """Update render quality state and sync buttons."""
+        self._state.render_quality = mode
+        
+        # Sync buttons
+        self._btn_opt.blockSignals(True)
+        self._btn_full.blockSignals(True)
+        self._btn_opt.setChecked(mode == "optimized")
+        self._btn_full.setChecked(mode == "transparent")
+        self._btn_opt.blockSignals(False)
+        self._btn_full.blockSignals(False)
+        
+        # Update canvas
+        self._canvas._on_quality_mode_changed(mode)
+        
+        # If switching to Full and auto-range is enabled, trigger it
+        if mode == "transparent" and self._state.auto_range_on_quality:
+            self._canvas._auto_range_axes()
 
     def _on_gate_created(self, gate: Gate) -> None:
         """Handle gate_created from canvas — forward to controller."""
