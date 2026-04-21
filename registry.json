@@ -7,27 +7,27 @@
   "plugins": {
     "western_blot": {
       "name": "Western Blot Densitometry",
-      "version": "1.0.2",
-      "min_core_version": "1.0.1",
+      "version": "1.0.3",
+      "min_core_version": "1.0.3",
       "description": "Automated lane detection, band quantification, and Ponceau normalization.",
       "author": "Kalaimaran Balasothy",
-      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/western_blot/v1.0.2/western_blot.zip"
+      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/western_blot/v1.0.3/western_blot.zip"
     },
     "cytometrics": {
       "name": "CytoMetrics",
-      "version": "0.1.2-beta",
-      "min_core_version": "1.0.1",
+      "version": "0.1.4",
+      "min_core_version": "1.0.2",
       "description": "AI-assisted multi-channel cell morphology quantification.",
       "author": "Kalaimaran Balasothy",
-      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/cytometrics/v0.1.2-beta/cytometrics.zip"
+      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/cytometrics/v0.1.4/cytometrics.zip"
     },
     "flow_cytometry": {
       "name": "Flow Cytometry Workspace",
-      "version": "0.1.3",
-      "min_core_version": "1.0.1",
+      "version": "0.1.4",
+      "min_core_version": "1.0.2",
       "description": "Scientist-centric flow cytometry analysis with FMO-guided gating, adaptive gates, workflow templates, and full workspace control.",
       "author": "Kalaimaran Balasothy",
-      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/flow_cytometry/v0.1.3/flow_cytometry.zip"
+      "download_url": "https://github.com/KalaimaranB/BioPro-Plugins/releases/download/flow_cytometry/v0.1.4/flow_cytometry.zip"
     }
   }
 }
