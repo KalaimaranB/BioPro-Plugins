@@ -187,3 +187,13 @@ class MultiChannelCanvas(QGraphicsView):
         for item in self._cell_items:
             if isinstance(item, CellPolygonItem):
                 item.set_highlighted(item.cell_id == target_id)
+
+    def cleanup(self) -> None:
+        """Release UI resources. Called when the plugin panel is closed."""
+        if hasattr(self, 'scene'):
+            self.scene.clear()
+        self._cell_items.clear()
+        self._drawing_points.clear()
+        self._calib_line_item = None
+        self._placeholder = None
+        self._image_item = None

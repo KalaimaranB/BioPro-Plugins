@@ -1,6 +1,7 @@
 """CytoMetrics Entry Point."""
 
 import math
+import logging
 import sys
 import os
 import csv
@@ -29,6 +30,9 @@ from .image_canvas import MultiChannelCanvas
 from .channel_manager import ChannelManagerWidget
 from biopro.plugins.cytometrics.analysis.image_stack import ImageStack
 from biopro.plugins.cytometrics.analysis.state import CytoMetricsState
+
+
+logger = logging.getLogger(__name__)
 
 
 class HardwareMonitor(QWidget):
@@ -572,41 +576,64 @@ class CytoMetricsPanel(PluginBase):
         from .workers import load_libraries_func
         
         task = FunctionalTask(load_libraries_func)
-        task_id = task_scheduler.submit(task, self.state)
+        self._loader_task_id = task_scheduler.submit(task, self.state)
         
-        def _on_loader_finished(tid, results):
-            if tid != task_id: return
-            task_scheduler.task_finished.disconnect(_on_loader_finished)
-            task_scheduler.task_error.disconnect(_on_loader_error)
+        task_scheduler.task_finished.connect(self._on_loader_finished_handler)
+        task_scheduler.task_error.connect(self._on_loader_error_handler)
+
+    def _on_loader_finished_handler(self, tid, results):
+        if hasattr(self, '_loader_task_id') and tid == self._loader_task_id:
+            from biopro.core import task_scheduler
+            try:
+                task_scheduler.task_finished.disconnect(self._on_loader_finished_handler)
+                task_scheduler.task_error.disconnect(self._on_loader_error_handler)
+            except (TypeError, RuntimeError):
+                pass # Already disconnected or object deleted
             
             res = results.get("task_result", {})
             self._on_ai_loaded(res.get("success", False), res.get("pipelines", {}), "Loaded")
 
-        def _on_loader_error(tid, error):
-            if tid != task_id: return
-            task_scheduler.task_finished.disconnect(_on_loader_finished)
-            task_scheduler.task_error.disconnect(_on_loader_error)
+    def _on_loader_error_handler(self, tid, error):
+        if hasattr(self, '_loader_task_id') and tid == self._loader_task_id:
+            from biopro.core import task_scheduler
+            try:
+                task_scheduler.task_finished.disconnect(self._on_loader_finished_handler)
+                task_scheduler.task_error.disconnect(self._on_loader_error_handler)
+            except (TypeError, RuntimeError):
+                pass
             self._on_ai_loaded(False, {}, error)
-
-        task_scheduler.task_finished.connect(self._on_loader_finished)
-        task_scheduler.task_error.connect(self._on_loader_error)
 
     def cleanup(self) -> None:
         """Called when the Cytometrics tab is closed."""
         logger.info("Cleaning up CytoMetrics panel...")
 
-        # 1. Stop UI timers to prevent 'zombie' updates
-        if hasattr(self, 'hardware_monitor'):
-            self.hardware_monitor.stop()
+        # 1. Stop UI timers and child widgets
+        if hasattr(self, 'hw_monitor'):
+            self.hw_monitor.stop()
         
-        # We need to find the BioLoadingBar in the layout if it's there
-        # but better to store a ref in future. For now, stop the ones we know.
+        if hasattr(self, 'progress_bar'):
+            self.progress_bar.setVisible(False)
+
+        # 2. Cleanup key components
+        if hasattr(self, 'canvas'):
+            self.canvas.cleanup()
         
-        # 2. Release image data
-        if self.image_stack:
+        if hasattr(self, 'channel_manager'):
+            self.channel_manager.cleanup()
+        
+        # 3. Release image data
+        if hasattr(self, 'image_stack') and self.image_stack:
             self.image_stack.clear()
         
-        # 3. Disconnect and nullify state
+        # 4. Disconnect background tasks
+        from biopro.core import task_scheduler
+        try:
+            task_scheduler.task_finished.disconnect(self._on_loader_finished_handler)
+            task_scheduler.task_error.disconnect(self._on_loader_error_handler)
+        except (TypeError, RuntimeError):
+            pass
+        
+        # 5. Disconnect and nullify state
         super().cleanup()
 
     def shutdown(self) -> None:

@@ -156,3 +156,9 @@ class ChannelManagerWidget(QWidget):
         """Safely removes all channel rows from the UI table."""
         # Because you are using a QTableWidget, clearing it is this easy!
         self.table.setRowCount(0)
+
+    def cleanup(self) -> None:
+        """Release UI resources. Called when the plugin panel is closed."""
+        self.table.blockSignals(True)
+        self.clear_ui()
+        self.image_stack = None # Release reference to data model

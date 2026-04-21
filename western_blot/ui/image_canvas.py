@@ -645,3 +645,9 @@ class ImageCanvas(QGraphicsView):
             self.setDragMode(QGraphicsView.DragMode.NoDrag)
 
         super().mouseReleaseEvent(event)
+
+    def cleanup(self) -> None:
+        """Release UI resources. Called when the plugin panel is closed."""
+        self.clear_overlays()
+        if self._scene:
+            self._scene.clear()
