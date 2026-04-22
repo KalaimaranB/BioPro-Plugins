@@ -1,8 +1,8 @@
 {
     "id": "western_blot",
     "name": "Western Blot Densitometry",
-    "version": "1.0.5",
-    "min_core_version": "1.0.3",
+    "version": "1.0.7",
+    "min_core_version": "1.0.4",
     "description": "Automated lane detection, band quantification, and Ponceau normalization.",
     "author": "Kalaimaran Balasothy",
     "icon": "\ud83d\udd2c",

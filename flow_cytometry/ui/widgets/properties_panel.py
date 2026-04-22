@@ -55,6 +55,12 @@ class PropertiesPanel(QWidget):
         self._current_sample_id: Optional[str] = None
         self._current_node_id: Optional[str] = None
         self._setup_ui()
+        self._setup_events()
+
+    def _setup_events(self) -> None:
+        eb = self._state.event_bus
+        from ...analysis.event_bus import EventType
+        eb.subscribe(EventType.AXIS_PARAMS_CHANGED, lambda _: self.refresh())
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)

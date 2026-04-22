@@ -48,6 +48,7 @@ class WorkspaceRibbon(QWidget):
     group_requested = pyqtSignal()
     template_load_requested = pyqtSignal()
     template_save_requested = pyqtSignal()
+    workflow_save_requested = pyqtSignal()
 
     def __init__(self, state: FlowState, parent=None) -> None:
         super().__init__(parent)
@@ -70,7 +71,7 @@ class WorkspaceRibbon(QWidget):
         layout.addWidget(btn_group)
 
         btn_load_tmpl = SecondaryButton("📋 Load Template")
-        btn_load_tmpl.setToolTip("Load a workflow template")
+        btn_load_tmpl.setToolTip("Load a workflow template (gates + structure)")
         btn_load_tmpl.clicked.connect(self._on_load_template)
         layout.addWidget(btn_load_tmpl)
 
@@ -78,6 +79,11 @@ class WorkspaceRibbon(QWidget):
         btn_save_tmpl.setToolTip("Save current workspace as a reusable template")
         btn_save_tmpl.clicked.connect(self._on_save_template)
         layout.addWidget(btn_save_tmpl)
+
+        btn_save_wf = PrimaryButton("💾 Save Workflow")
+        btn_save_wf.setToolTip("Save all gates, axes, and loaded files as a complete session")
+        btn_save_wf.clicked.connect(self._on_save_workflow)
+        layout.addWidget(btn_save_wf)
 
         layout.addStretch()
 
@@ -290,4 +296,52 @@ class WorkspaceRibbon(QWidget):
             QMessageBox.warning(
                 self, "Save Error",
                 f"Failed to save template:\n{exc}"
+            )
+
+    def _on_save_workflow(self) -> None:
+        """Save the entire workspace state as a workflow using BioPro SDK services."""
+        from biopro.ui.dialogs import SaveWorkflowDialog
+        
+        main_win = self.window()
+        pm = self._get_project_manager()
+        
+        if pm is None:
+            QMessageBox.critical(self, "Error", "Project Manager not found. Cannot save workflow.")
+            return
+
+        # 1. Pop the dialog to get metadata
+        dialog = SaveWorkflowDialog(self)
+        if not dialog.exec():
+            return
+
+        metadata = dialog.get_metadata()
+
+        try:
+            # 2. Get the payload from the main panel
+            # We assume the parent/window of this ribbon is or contains the FlowCytometryPanel
+            # In our architecture, FlowCytometryPanel is the PluginBase.
+            # We can also just use self._state.to_workflow_dict() directly since we have it!
+            payload = self._state.to_workflow_dict()
+
+            # 3. Save via ProjectManager
+            # We need the current module ID
+            module_id = getattr(main_win, "current_module_id", "flow_cytometry")
+
+            filename = pm.save_workflow(
+                module_id=module_id,
+                payload=payload,
+                metadata=metadata
+            )
+
+            QMessageBox.information(
+                self, "Workflow Saved",
+                f"Workflow saved successfully:\n{filename}"
+            )
+            self.workflow_save_requested.emit()
+
+        except Exception as exc:
+            logger.error("Failed to save workflow: %s", exc)
+            QMessageBox.critical(
+                self, "Save Error",
+                f"Failed to save workflow:\n{exc}"
             )

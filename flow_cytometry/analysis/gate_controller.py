@@ -251,6 +251,16 @@ class GateController(QObject):
             self._recompute_subtree(node, sample)
             self.gate_stats_updated.emit(sample_id, node.node_id)
 
+        # Publish to EventBus
+        self._state.event_bus.publish(Event(
+            type=EventType.GATE_MODIFIED,
+            data={
+                "sample_id": sample_id,
+                "gate_id": gate_id,
+            },
+            source="GateController"
+        ))
+
         self.propagation_requested.emit(gate_id, sample_id)
         return True
 

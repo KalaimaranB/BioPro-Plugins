@@ -142,6 +142,8 @@ class FlowState(PluginState):
             data: Dictionary previously produced by
                   :meth:`to_workflow_dict`.
         """
+        logger.info(f"Restoring FlowState from workflow dict (samples: {len(data.get('experiment', {}).get('samples', {}))})")
+        
         # Compensation
         comp_data = data.get("compensation")
         if comp_data:
@@ -162,10 +164,12 @@ class FlowState(PluginState):
         # Experiment reconstruction: reload FCS files from saved paths
         exp_data = data.get("experiment", {})
         if exp_data:
+            logger.info("Restoring experiment model...")
             self.experiment = Experiment.from_dict(exp_data)
 
             sample_paths = data.get("sample_paths", {})
             if sample_paths:
+                logger.info(f"Reloading {len(sample_paths)} FCS files...")
                 self._reload_fcs_data(sample_paths)
 
         # Scale parameters
@@ -182,7 +186,7 @@ class FlowState(PluginState):
                 logicle_a=sc.get("logicle_a", 0.0),
             )
 
-        logger.info("FlowState restored from workflow dict.")
+        logger.info("FlowState restoration complete.")
 
     def _reload_fcs_data(self, sample_paths: dict[str, str]) -> None:
         """Reload FCS event data from disk for saved samples.

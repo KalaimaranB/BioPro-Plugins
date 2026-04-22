@@ -107,26 +107,23 @@ _MPL_STYLE = {
 }
 
 # Gate drawing colours
-_GATE_EDGE_COLOR = "#00E5FF"
-_GATE_FILL_COLOR = "#00E5FF"
-_GATE_ALPHA = 0.12
-_GATE_EDGE_ALPHA = 0.9
-_GATE_LINEWIDTH = 1.5
-_GATE_SELECTED_EDGE = "#FFAB40"
-_GATE_SELECTED_ALPHA = 0.20
-_RUBBER_BAND_COLOR = "#FFFFFF"
-_RUBBER_BAND_ALPHA = 0.5
+_GATE_EDGE_COLOR = "#000000"  # Black
+_GATE_FILL_COLOR = "#000000"  # Black
+_GATE_ALPHA = 0.05
+_GATE_EDGE_ALPHA = 1.0
+_GATE_LINEWIDTH = 1.2
+_GATE_SELECTED_EDGE = "#2188FF" # Subtle blue for selection
+_GATE_SELECTED_ALPHA = 0.10
+_RUBBER_BAND_COLOR = "#333333"
+_RUBBER_BAND_ALPHA = 0.4
 
-# Different colors for gates at different depths
+# Different shades of dark for multi-gate plots
 _GATE_PALETTE = [
-    "#00E5FF",   # Cyan
-    "#76FF03",   # Light green
-    "#FF4081",   # Pink
-    "#FFD740",   # Amber
-    "#E040FB",   # Purple
-    "#64FFDA",   # Teal
-    "#FF6E40",   # Deep orange
-    "#448AFF",   # Blue
+    "#000000",   # Black
+    "#333333",   # Dark gray
+    "#555555",   # Medium gray
+    "#222222",   # Near black
+    "#444444",   # Charcoal
 ]
 
 
@@ -419,6 +416,8 @@ class FlowCanvas(FigureCanvasQTAgg):
             parent._y_scale.max_val = y_max
             
             self.set_scales(parent._x_scale, parent._y_scale)
+            # Notify the system to refresh thumbnails and sidebar
+            parent._notify_axis_change()
 
     # ── Batch update ───────────────────────────────────────────────
 
@@ -1057,7 +1056,12 @@ class FlowCanvas(FigureCanvasQTAgg):
                 self._gate_artists.append(hl)
 
                 # Quadrant labels
-                q_labels = ["Q1 ++", "Q2 −+", "Q3 −−", "Q4 +−"]
+                q_nodes = sharing_nodes[0].children if sharing_nodes else []
+                if len(q_nodes) == 4:
+                    q_labels = [self._format_gate_label(None, n) for n in q_nodes]
+                else:
+                    q_labels = ["Q1 ++", "Q2 −+", "Q3 −−", "Q4 +−"]
+
                 q_positions = [
                     (x_mid + (xlim[1] - x_mid) * 0.5, y_mid + (ylim[1] - y_mid) * 0.5),
                     (xlim[0] + (x_mid - xlim[0]) * 0.5, y_mid + (ylim[1] - y_mid) * 0.5),
@@ -1065,12 +1069,15 @@ class FlowCanvas(FigureCanvasQTAgg):
                     (x_mid + (xlim[1] - x_mid) * 0.5, ylim[0] + (y_mid - ylim[0]) * 0.5),
                 ]
                 for ql, (qx, qy) in zip(q_labels, q_positions):
-                    txt = self._ax.text(
-                        qx, qy, ql,
-                        fontsize=9, color=edge_color,
+                    txt = self._ax.annotate(
+                        ql,
+                        xy=(qx, qy),
+                        fontsize=10, 
+                        color="#000000",
                         fontweight="bold",
                         ha="center", va="center",
-                        alpha=0.7, zorder=12,
+                        zorder=12,
+                        bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFFFFFCC", edgecolor="#CCCCCC", linewidth=0.5)
                     )
                     self._gate_artists.append(txt)
 
@@ -1126,9 +1133,9 @@ class FlowCanvas(FigureCanvasQTAgg):
         """Draw labels for all populations sharing a gate, offset vertically."""
         for i, node in enumerate(nodes):
             label_text = self._format_gate_label(node.gate, node)
-            color = Colors.ACCENT_NEGATIVE if node.negated else _GATE_PALETTE[i % len(_GATE_PALETTE)]
+            color = "#000000" # Pure black text for all labels
             if is_selected:
-                color = _GATE_SELECTED_EDGE
+                color = "#000000" # Stay black but maybe bolded via kwargs
 
             # Vertical offset: 14 points per label
             direction = -1 if text_kwargs.get("va") == "top" else 1
@@ -1139,10 +1146,11 @@ class FlowCanvas(FigureCanvasQTAgg):
                 xy=pos,
                 xytext=(0, y_off),
                 textcoords="offset points",
-                fontsize=8,
-                color=color,
-                fontweight="bold" if is_selected else "normal",
+                fontsize=10,
+                color="#000000",
+                fontweight="bold",
                 zorder=12 + i,
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFFFFFCC", edgecolor="#CCCCCC", linewidth=0.5),
                 **text_kwargs
             )
             self._gate_artists.append(txt)
@@ -1240,7 +1248,7 @@ class FlowCanvas(FigureCanvasQTAgg):
                 linewidth=1.5,
                 edgecolor=_RUBBER_BAND_COLOR,
                 facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.08,
+                alpha=0.2,
                 linestyle=":",
                 zorder=20,
             )
@@ -1254,7 +1262,7 @@ class FlowCanvas(FigureCanvasQTAgg):
                 linewidth=1.5,
                 edgecolor=_RUBBER_BAND_COLOR,
                 facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.08,
+                alpha=0.2,
                 linestyle=":",
                 zorder=20,
             )
@@ -1268,7 +1276,7 @@ class FlowCanvas(FigureCanvasQTAgg):
                 linewidth=1.5,
                 edgecolor=_RUBBER_BAND_COLOR,
                 facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.06,
+                alpha=0.2,
                 linestyle=":",
                 zorder=20,
             )
@@ -1279,24 +1287,11 @@ class FlowCanvas(FigureCanvasQTAgg):
             # Create a temporary gate object for preview
             temp_gate = None
             if self._drawing_mode == GateDrawingMode.RECTANGLE:
-                temp_gate = RectangleGate(
-                    self._x_param, self._y_param,
-                    x_min=min(x0, x1), x_max=max(x0, x1),
-                    y_min=min(y0, y1), y_max=max(y0, y1)
-                )
+                temp_gate = self._gate_factory.create_rectangle(x0, y0, x1, y1)
             elif self._drawing_mode == GateDrawingMode.ELLIPSE:
-                temp_gate = EllipseGate(
-                    self._x_param, self._y_param,
-                    center_x=(x0 + x1)/2, center_y=(y0 + y1)/2,
-                    width=abs(x1 - x0), height=abs(y1 - y0)
-                )
+                temp_gate = self._gate_factory.create_ellipse(x0, y0, x1, y1)
             elif self._drawing_mode == GateDrawingMode.RANGE:
-                ylim = self._ax.get_ylim()
-                temp_gate = RectangleGate(
-                    self._x_param, None,
-                    x_min=min(x0, x1), x_max=max(x0, x1),
-                    y_min=ylim[0], y_max=ylim[1]
-                )
+                temp_gate = self._gate_factory.create_range(x0, x1)
             
             if temp_gate:
                 from ...analysis.event_bus import Event, EventType
@@ -1329,6 +1324,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         ylim = self._ax.get_ylim()
         threshold = min(xlim[1] - xlim[0], ylim[1] - ylim[0]) * 0.005
         if drag_dist < threshold:
+            self._clear_previews()
             return
 
         if self._drawing_mode == GateDrawingMode.RECTANGLE:
@@ -1337,6 +1333,8 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._finalize_ellipse(x0, y0, x1, y1)
         elif self._drawing_mode == GateDrawingMode.RANGE:
             self._finalize_range(x0, x1)
+        
+        self._clear_previews()
 
     def _on_dblclick(self, event) -> None:
         """Handle double-click — close polygon."""
@@ -1349,6 +1347,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             if len(self._polygon_vertices) > 3:
                 self._polygon_vertices.pop()
             self._finalize_polygon()
+            self._clear_previews()
 
     # ── Gate finalization ─────────────────────────────────────────────
 
@@ -1449,10 +1448,30 @@ class FlowCanvas(FigureCanvasQTAgg):
                 [xs[-1], xs[0]], [ys[-1], ys[0]], "--",
                 color=_GATE_EDGE_COLOR,
                 linewidth=1.0,
-                alpha=0.4,
+                alpha=0.5,
                 zorder=20,
             )
             self._polygon_marker_lines.append(close_line)
+
+        # ── Publish partial polygon for Group Preview ──────────────────
+        if len(self._polygon_vertices) >= 2:
+            from ...analysis.gating import PolygonGate
+            from ...analysis.event_bus import Event, EventType
+            
+            # Map vertices back to data space for the preview gate
+            raw_verts = [self._coordinate_mapper.untransform_point(v[0], v[1]) 
+                         for v in self._polygon_vertices]
+            temp_gate = PolygonGate(
+                self._x_param, self._y_param,
+                vertices=raw_verts
+            )
+            self._state.event_bus.publish(Event(
+                EventType.GATE_PREVIEW,
+                data={"gate": temp_gate, "sample_id": getattr(self, '_sample_id', None)},
+                source="flow_canvas"
+            ))
+
+        self.draw_idle()
 
         # Update instruction with vertex count
         n_pts = len(self._polygon_vertices)
@@ -1662,3 +1681,13 @@ class FlowCanvas(FigureCanvasQTAgg):
             logger.info(f"Plot saved to {file_path}")
         except Exception as e:
             logger.error(f"Failed to save plot: {e}")
+
+    def _clear_previews(self) -> None:
+        """Clear temporary gate previews across all views."""
+        from ...analysis.event_bus import Event, EventType
+        if self._state and self._state.event_bus:
+            self._state.event_bus.publish(Event(
+                EventType.GATE_PREVIEW,
+                data={"gate": None},
+                source="flow_canvas"
+            ))

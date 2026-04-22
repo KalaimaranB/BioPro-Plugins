@@ -109,10 +109,9 @@ try:
     print("✓ PropertiesPanel imported")
     
     print("\n🚀 All imports verified successfully!")
-    sys.exit(0)
     
 except Exception as e:
     print(f"\n❌ IMPORT ERROR: {e}")
     import traceback
     traceback.print_exc()
-    sys.exit(1)
+    raise e

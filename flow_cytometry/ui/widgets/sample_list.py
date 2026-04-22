@@ -177,6 +177,18 @@ class SampleList(QWidget):
         item.setFont(0, font)
 
         return item
+    
+    def select_sample(self, sample_id: str | None) -> None:
+        """Select a sample in the list by ID."""
+        if not sample_id:
+            self._tree.clearSelection()
+            return
+            
+        for i in range(self._tree.topLevelItemCount()):
+            item = self._tree.topLevelItem(i)
+            if item.data(0, Qt.ItemDataRole.UserRole) == sample_id:
+                self._tree.setCurrentItem(item)
+                break
 
     def _update_empty_state(self) -> None:
         is_empty = self._tree.topLevelItemCount() == 0

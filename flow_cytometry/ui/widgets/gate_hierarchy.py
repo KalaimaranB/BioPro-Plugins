@@ -229,11 +229,13 @@ class GateHierarchy(QWidget):
         self._tree.clear()
         self._gate_item_map.clear()
 
-        if not self._active_sample_id:
+        # Robustness: if no active sample is set, try to use the global state's current sample
+        sid = self._active_sample_id or self._state.current_sample_id
+        if not sid:
             self._update_empty_state()
             return
             
-        sample = self._state.experiment.samples.get(self._active_sample_id)
+        sample = self._state.experiment.samples.get(sid)
         if sample:
             self._add_gate_children(self._tree.invisibleRootItem(), sample.gate_tree, depth=0)
             

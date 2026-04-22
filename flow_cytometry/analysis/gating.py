@@ -470,13 +470,13 @@ class QuadrantGate(Gate):
         mid_x_disp = apply_transform(mid_x_raw, x_type, **x_kwargs)[0]
         mid_y_disp = apply_transform(mid_y_raw, y_type, **y_kwargs)[0]
 
-        if q == "Q1":
-            return (x_disp >= mid_x_disp) & (y_disp >= mid_y_disp)
-        elif q == "Q2":
+        if q == "Q1": # Upper Left
             return (x_disp < mid_x_disp) & (y_disp >= mid_y_disp)
-        elif q == "Q3":
+        elif q == "Q2": # Upper Right
+            return (x_disp >= mid_x_disp) & (y_disp >= mid_y_disp)
+        elif q == "Q3": # Lower Left
             return (x_disp < mid_x_disp) & (y_disp < mid_y_disp)
-        elif q == "Q4":
+        elif q == "Q4": # Lower Right
             return (x_disp >= mid_x_disp) & (y_disp < mid_y_disp)
         else:
             raise ValueError(f"Invalid quadrant: {quadrant!r}")
@@ -677,6 +677,8 @@ class GateNode:
             negated=data.get("negated", False),
         )
         node.statistics = data.get("statistics", {})
+        
+        logger.info(f"Reconstructed GateNode '{node.name}' with {len(data.get('children', []))} children")
         
         # Reconstruct children
         for child_data in data.get("children", []):

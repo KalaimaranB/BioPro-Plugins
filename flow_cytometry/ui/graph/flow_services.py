@@ -275,7 +275,7 @@ class GateFactory:
         Returns:
             QuadrantGate with midpoint in data space
         """
-        rx, ry = self.mapper.transform_point(x, y)
+        rx, ry = self.mapper.untransform_point(x, y)
 
         gate = QuadrantGate(
             x_param=self.x_param,
@@ -329,9 +329,9 @@ class GateOverlayRenderer:
 
     # Color scheme for gate overlays
     OVERLAY_COLORS = {
-        "default": "#E64646",  # Red
-        "selected": "#FFD700",  # Gold
-        "inactive": "#999999",  # Gray
+        "default": "#000000",   # Black
+        "selected": "#2188FF",  # GitHub Blue for selection
+        "inactive": "#888888",  # Gray
     }
 
     def __init__(self, coordinate_mapper: CoordinateMapper):
@@ -503,8 +503,8 @@ class GateOverlayRenderer:
                 y,
                 label,
                 fontsize=9,
-                color="white",
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="black", alpha=0.7),
+                color="black",
+                bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFFFFFCC", edgecolor="#CCCCCC", linewidth=0.5),
                 ha="center",
                 va="center",
                 zorder=1001,

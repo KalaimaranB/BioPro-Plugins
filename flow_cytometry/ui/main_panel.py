@@ -381,6 +381,8 @@ class FlowCytometryPanel(PluginBase):
         """All samples finished propagation."""
         n = len(self.state.experiment.samples)
         self.status_message.emit(f"✓ Gate propagation complete ({n} samples updated).")
+        # Refresh the properties panel and preview to show the new propagated gates/stats
+        self._properties_panel.refresh()
 
     def _on_delete_selected_gate(self) -> None:
         """Delete the gate currently selected on the canvas."""
@@ -574,21 +576,65 @@ class FlowCytometryPanel(PluginBase):
     def load_workflow(self, payload: dict) -> None:
         """Restore the workspace from a saved file."""
         if not payload:
+            logger.warning("Empty payload received in load_workflow.")
             return
 
-        self.state.from_workflow_dict(payload)
-        self._refresh_all()
-        self.status_message.emit("Workflow loaded successfully.")
+        logger.info("MainPanel: Loading workflow...")
+        try:
+            # Unwrap if the full BioPro envelope (metadata + payload) is passed
+            actual_data = payload.get("payload", payload)
+            
+            self.state.from_workflow_dict(actual_data)
+            
+            # Defer refresh to ensure all state updates are processed
+            QTimer.singleShot(50, self._refresh_all)
+            
+            self.status_message.emit("Workflow loaded successfully.")
+            logger.info("MainPanel: Workflow load triggered.")
+        except Exception as exc:
+            logger.exception("Failed to load workflow")
+            QMessageBox.critical(self, "Load Error", f"Failed to restore workflow:\n{exc}")
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _refresh_all(self) -> None:
         """Rebuild all UI widgets from the current state."""
+        logger.info("MainPanel: Performing full UI refresh...")
+        
+        # 1. Refresh data-driven widgets first
         self._groups_panel.refresh()
         self._sample_list.refresh()
-        self._gate_hierarchy.refresh()
+        
+        # 2. Sync the active sample context
+        sid = self.state.current_sample_id
+        
+        # Fallback: if no sample is active, pick the first one from the loaded data
+        if not sid and self.state.experiment.samples:
+            sid = list(self.state.experiment.samples.keys())[0]
+            self.state.current_sample_id = sid
+            logger.info(f"MainPanel: No active sample in workflow, auto-selecting: {sid}")
+
+        if sid:
+            logger.info(f"MainPanel: Restoring active sample: {sid}")
+            # Block signals to prevent redundant refresh calls during setup
+            self._sample_list._tree.blockSignals(True)
+            self._sample_list.select_sample(sid)
+            self._sample_list._tree.blockSignals(False)
+            
+            self._gate_hierarchy.set_active_sample(sid)
+        else:
+            self._gate_hierarchy.refresh()
+        
+        # 3. Restore gate selection
+        if self.state.current_gate_id:
+            logger.info(f"MainPanel: Restoring gate selection: {self.state.current_gate_id}")
+            self._on_gate_selected(self.state.current_gate_id)
+            
+        # 4. Final refresh for properties and graph
         self._properties_panel.refresh()
         self._graph_manager.refresh()
+        
+        logger.info("MainPanel: Full UI refresh complete.")
 
     def _sample_name(self, sample_id: str) -> str:
         """Get a sample's display name by ID."""

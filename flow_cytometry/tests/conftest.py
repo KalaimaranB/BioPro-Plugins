@@ -92,6 +92,32 @@ sys.modules['biopro.ui.theme'] = MagicMock()
 sys.modules['biopro.ui.theme'].Colors = MockColors
 sys.modules['biopro.ui.theme'].Fonts = MockFonts
 
+import types
+def mock_pkg(name):
+    m = types.ModuleType(name)
+    sys.modules[name] = m
+    return m
+
+biopro_sdk = mock_pkg("biopro.sdk")
+biopro_sdk_core = mock_pkg("biopro.sdk.core")
+class MockBase: pass
+biopro_sdk_core.PluginState = MockBase
+biopro_sdk_core.PluginBase = MockBase
+biopro_sdk_core.AnalysisBase = MockBase
+biopro_sdk_core_managed_task = mock_pkg("biopro.sdk.core.managed_task")
+biopro_sdk_core_managed_task.FunctionalTask = MagicMock
+biopro_sdk_core.managed_task = biopro_sdk_core_managed_task
+
+biopro_core = mock_pkg("biopro.core")
+biopro_core_task = mock_pkg("biopro.core.task_scheduler")
+biopro_core_task.task_scheduler = MagicMock()
+
+sys.modules['biopro.shared'] = MagicMock()
+sys.modules['biopro.shared.ui'] = MagicMock()
+sys.modules['biopro.shared.ui.ui_components'] = MagicMock()
+sys.modules['biopro.shared.ui.ui_components'].PrimaryButton = MagicMock
+sys.modules['biopro.shared.ui.ui_components'].SecondaryButton = MagicMock
+
 # ─────────────────────────────────────────────────────────────────────────
 
 # Add parent directory to path to import flow_cytometry

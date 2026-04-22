@@ -609,21 +609,54 @@ class GraphWindow(QWidget):
         
         # When values change, update local, redraw, and implicitly sync globally
         def on_change(axis_id: str, new_scale: AxisScale):
+            old_scale = self._x_scale if axis_id == "x" else self._y_scale
+            transform_changed = old_scale.transform_type != new_scale.transform_type
+            
             if axis_id == "x":
                 self._x_scale = new_scale.copy()
                 x_ch = self._x_combo.currentData() or self._x_combo.currentText()
                 self._state.channel_scales[x_ch] = self._x_scale.copy()
                 self.axis_scale_sync_requested.emit(x_ch, self._x_scale)
+                self._notify_axis_change()
             else:
                 self._y_scale = new_scale.copy()
                 y_ch = self._y_combo.currentData() or self._y_combo.currentText()
                 self._state.channel_scales[y_ch] = self._y_scale.copy()
                 self.axis_scale_sync_requested.emit(y_ch, self._y_scale)
-            self._canvas.set_scales(self._x_scale, self._y_scale)
+                self._notify_axis_change()
+            
+            if transform_changed:
+                self._state.event_bus.publish(Event(
+                    type=EventType.TRANSFORM_CHANGED,
+                    data={
+                        "sample_id": self._sample_id,
+                        "axis": axis_id,
+                        "channel": x_ch if axis_id == "x" else y_ch,
+                        "old_type": old_scale.transform_type,
+                        "new_type": new_scale.transform_type,
+                    },
+                    source="GraphWindow"
+                ))
+                
+            self._render_initial()
             
         dlg.scale_changed.connect(on_change)
         
         dlg.show()
+
+    def _notify_axis_change(self) -> None:
+        """Publish the current axis state to the global event bus."""
+        x_ch = self._x_combo.currentData() or self._x_combo.currentText()
+        y_ch = self._y_combo.currentData() or self._y_combo.currentText()
+        self._state.event_bus.publish(Event(
+            type=EventType.AXIS_RANGE_CHANGED,
+            data={
+                "sample_id": self._sample_id,
+                "x_param": x_ch, "y_param": y_ch,
+                "x_scale": self._x_scale, "y_scale": self._y_scale
+            },
+            source="GraphWindow"
+        ))
         
     def _calculate_auto_range(self, axis: str) -> tuple[float, float]:
         """Compute the robust min/max for the given axis, using gated data."""

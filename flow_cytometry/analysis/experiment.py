@@ -142,7 +142,7 @@ class Sample:
         Note: ``fcs_data`` is NOT restored here — it is reloaded
         separately by ``FlowState._reload_fcs_data()``.
         """
-        return cls(
+        sample = cls(
             sample_id=data["sample_id"],
             display_name=data["display_name"],
             role=SampleRole(data.get("role", "other")),
@@ -152,6 +152,9 @@ class Sample:
             keywords=data.get("keywords", {}),
             is_compensated=data.get("is_compensated", False),
         )
+        if "gate_tree" in data:
+            sample.gate_tree = GateNode.from_dict(data["gate_tree"])
+        return sample
 
 
 @dataclass
@@ -485,10 +488,16 @@ class Experiment:
             name=data.get("name", "Untitled Experiment"),
         )
 
+        logger.info(f"Reconstructing Experiment '{exp.name}' from dict...")
+        
         # Restore samples
+        sample_count = 0
         for sid, sdata in data.get("samples", {}).items():
             sample = Sample.from_dict(sdata)
             exp.samples[sid] = sample
+            sample_count += 1
+
+        logger.info(f"Restored {sample_count} samples.")
 
         # Restore groups
         for gid, gdata in data.get("groups", {}).items():
