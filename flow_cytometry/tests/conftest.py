@@ -162,3 +162,65 @@ def reset_random_seed():
     import numpy as np
     np.random.seed(42)
     yield
+
+
+@pytest.fixture(scope="session")
+def fcs_dir():
+    """Path to real FCS test data."""
+    return Path(__file__).parent / "data" / "fcs"
+
+
+@pytest.fixture(scope="session")
+def sample_c_events(fcs_dir):
+    """Real 20k-event FCS data from Specimen_001_Sample_C.fcs."""
+    from flow_cytometry.analysis.fcs_io import load_fcs
+    # Using the exact path to one of the real data files
+    path = fcs_dir / "Specimen_001_Sample C.fcs"
+    if not path.exists():
+        pytest.skip(f"Real FCS test data not found: {path}")
+    sample = load_fcs(str(path))
+    return sample.events
+
+
+@pytest.fixture(scope="session")
+def sample_a_events(fcs_dir):
+    """Real FCS data from Specimen_001_Sample_A.fcs."""
+    from flow_cytometry.analysis.fcs_io import load_fcs
+    path = fcs_dir / "Specimen_001_Sample A.fcs"
+    if not path.exists():
+        pytest.skip(f"Real FCS test data not found: {path}")
+    sample = load_fcs(str(path))
+    return sample.events
+
+
+@pytest.fixture
+def graph_window_with_sample_c(qtbot, fcs_dir):
+    """Fully initialised GraphWindow using real FCS data."""
+    from flow_cytometry.ui.graph.graph_window import GraphWindow
+    from flow_cytometry.analysis.state import FlowState
+    from flow_cytometry.analysis.experiment import Experiment
+    from flow_cytometry.analysis.fcs_io import load_fcs
+    from biopro.sdk.core import PluginState
+    
+    path = fcs_dir / "Specimen_001_Sample C.fcs"
+    if not path.exists():
+        pytest.skip(f"Real FCS test data not found: {path}")
+        
+    fcs_data = load_fcs(str(path))
+    from flow_cytometry.analysis.experiment import Sample
+    sample = Sample(sample_id="sample_c", display_name="Sample C", fcs_data=fcs_data)
+    
+    state = FlowState(PluginState())
+    state.experiment = Experiment()
+    state.experiment.samples[sample.sample_id] = sample
+    
+    # We need a headless GraphWindow
+    win = GraphWindow(state, sample.sample_id)
+    win.show()
+    qtbot.addWidget(win)
+    
+    # Wait for the async initial render to complete (debounced)
+    qtbot.waitSignal(win._axis_debounce.timeout, timeout=1000)
+    qtbot.wait(100) # extra buffer for render completion
+    
+    return win

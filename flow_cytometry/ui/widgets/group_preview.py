@@ -57,19 +57,19 @@ def _resolve_scale(state: FlowState, channel: str) -> AxisScale:
     """Return the best AxisScale for channel, matching GraphWindow logic."""
     if channel in state.channel_scales:
         return state.channel_scales[channel].copy()
-    
-    # Fluorophore heuristic
+
+    # Fallback heuristic when the channel has not been opened in a GraphWindow yet.
     is_fluor = any(t in channel.upper() for t in ["-A", "-H", "-W", "FITC", "PE", "PI", "APC", "CY", "BLUE", "VIOLET", "RED"])
     is_scatter = any(channel.upper().startswith(p) for p in ["FSC", "SSC"])
-    
+
     if is_fluor and not is_scatter:
         sc = AxisScale(TransformType.BIEXPONENTIAL)
         sc.logicle_t = 262144.0
-        sc.logicle_w = 1.0  # Lock to 1.0 for FlowJo parity
+        sc.logicle_w = 0.5  # FlowJo standard
         sc.logicle_m = 4.5
-        sc.logicle_a = 1.0
+        sc.logicle_a = 0.0  # Only set > 0 when data has negatives
         return sc
-        
+
     return AxisScale(TransformType.LINEAR)
 
 
@@ -90,7 +90,7 @@ def _display_range(scale: AxisScale, full_raw: np.ndarray) -> tuple[float, float
     """Compute display-space axis limits matching the main FlowCanvas."""
     params = _xform_params(scale)
 
-    # Priority 1: stored limits from GraphWindow (most accurate)
+    # Priority 1: stored limits from GraphWindow (most accurate — always wins)
     if scale.min_val is not None and scale.max_val is not None:
         lo = float(apply_transform(np.array([scale.min_val]), scale.transform_type, **params)[0])
         hi = float(apply_transform(np.array([scale.max_val]), scale.transform_type, **params)[0])
@@ -101,13 +101,13 @@ def _display_range(scale: AxisScale, full_raw: np.ndarray) -> tuple[float, float
         return 0.0, 262144.0
 
     if scale.transform_type == TransformType.LINEAR:
-        # Match FlowCanvas: floor at 0 (or slight neg for compensated),
-        # ceiling at max(p99.9, 262144) — the full instrument range.
+        # Match FlowCanvas: floor at 0 for scatter channels; ceiling at instrument max.
+        # Using p99.9 vs 262144 ceiling ensures FSC/SSC always fills the axis.
         floor = min(0.0, float(np.percentile(valid, 0.05)))
         ceiling = max(float(np.percentile(valid, 99.9)), 262144.0)
         return floor, ceiling
 
-    # LOG / BIEX
+    # LOG / BIEX — adaptive based on data (no hardcoded 262144 ceiling)
     raw_lo, raw_hi = calculate_auto_range(valid, scale.transform_type)
     lo = float(apply_transform(np.array([raw_lo]), scale.transform_type, **params)[0])
     hi = float(apply_transform(np.array([raw_hi]), scale.transform_type, **params)[0])
@@ -127,6 +127,7 @@ def render_preview_to_buffer(
     limit: int,
     width_px: int,
     height_px: int,
+    plot_type: str = "pseudocolor",
 ) -> bytes:
     """Render a density thumbnail to an RGBA byte buffer (off the main thread)."""
     import matplotlib
@@ -178,49 +179,71 @@ def render_preview_to_buffer(
     ax.set_facecolor(PREVIEW_BG_COLOR)
     fig.set_facecolor(PREVIEW_BG_COLOR)
 
-    # ── 6. Mirror FlowCanvas Pseudocolor Logic ────────────────────────
+    # ── 6. Rendering Core ─────────────────────────────────────────────
     try:
         from fast_histogram import histogram2d
         from scipy.ndimage import gaussian_filter
         from scipy.stats import rankdata
 
-        # 1. Density Estimation (Matches GraphWindow "Optimized" mode)
-        N_BINS = 512
-        H = histogram2d(
-            y_disp, x_disp,
-            bins=(N_BINS, N_BINS),
-            range=[[y_min, y_max], [x_min, x_max]],
-        )
-        H_smooth = gaussian_filter(H.astype(np.float64), sigma=1.5)
-
-        # 2. Per-event density lookup
-        x_span = max(x_max - x_min, 1e-12)
-        y_span = max(y_max - y_min, 1e-12)
-        x_idx = np.clip(((x_disp - x_min) / x_span * N_BINS).astype(int), 0, N_BINS - 1)
-        y_idx = np.clip(((y_disp - y_min) / y_span * N_BINS).astype(int), 0, N_BINS - 1)
-        densities = H_smooth[y_idx, x_idx]
-
-        # 3. Equal Probability (Percentile) Normalization
-        if len(densities) > 0:
-            c_plot = rankdata(densities) / len(densities)
-            # Z-sort: dense events render on top
-            sort_idx = np.argsort(c_plot)
-            ax.scatter(
-                x_disp[sort_idx], y_disp[sort_idx],
-                c=c_plot[sort_idx],
-                cmap="turbo",
-                vmin=0.0, vmax=1.0,
-                s=0.6, # Balanced for 160x160 thumbnail
-                alpha=0.4, # Allow blending to show population depth
-                edgecolors="none",
-                rasterized=True
-            )
+        if plot_type == "histogram":
+            # 1D Histogram render
+            n_bins = min(128, max(32, int(np.sqrt(len(x_disp)) * 1.5)))
+            counts, edges = np.histogram(x_disp, bins=n_bins, range=(x_min, x_max))
+            
+            # Draw as filled area (FlowJo style)
+            ax.fill_between(edges[:-1], 0, counts, color="#58a6ff", alpha=0.7)
+            ax.set_ylim(0, counts.max() * 1.1 if len(counts) > 0 else 1.0)
+            
         else:
-            # Fallback for empty/low data
-            ax.scatter(x_disp, y_disp, s=1.0, c="#58a6ff", alpha=0.5, edgecolors="none")
+            # 2D Pseudocolor render
+            # 1. Density Estimation (Matches GraphWindow "Optimized" mode)
+            n_points = len(x_disp)
+            N_BINS = int(min(256, max(64, np.sqrt(n_points) * 1.2)))
+            sigma = max(0.8, 1.5 * (N_BINS / 256))
+            
+            H = histogram2d(
+                y_disp, x_disp,
+                bins=(N_BINS, N_BINS),
+                range=[[y_min, y_max], [x_min, x_max]],
+            )
+            H_smooth = gaussian_filter(H.astype(np.float64), sigma=sigma)
+
+            # 2. Per-event density lookup
+            x_span = max(x_max - x_min, 1e-12)
+            y_span = max(y_max - y_min, 1e-12)
+            x_idx = np.clip(((x_disp - x_min) / x_span * N_BINS).astype(int), 0, N_BINS - 1)
+            y_idx = np.clip(((y_disp - y_min) / y_span * N_BINS).astype(int), 0, N_BINS - 1)
+            densities = H_smooth[y_idx, x_idx]
+
+            # 3. Equal Probability (Percentile) Normalization
+            if len(densities) > 0:
+                c_plot = rankdata(densities) / len(densities)
+                # Z-sort: dense events render on top
+                sort_idx = np.argsort(c_plot)
+                ax.scatter(
+                    x_disp[sort_idx], y_disp[sort_idx],
+                    c=c_plot[sort_idx],
+                    cmap="turbo",
+                    vmin=0.0, vmax=1.0,
+                    s=0.8, # Slightly larger for thumbnails
+                    alpha=0.6,
+                    edgecolors="none",
+                    rasterized=True
+                )
+            else:
+                # Fallback for empty/low data
+                ax.scatter(x_disp, y_disp, s=1.0, c="#58a6ff", alpha=0.5, edgecolors="none")
+
+        # Option C: Linear region shading (visual parity)
+        if x_scale.transform_type == TransformType.BIEXPONENTIAL:
+            r_lo, r_hi = apply_transform(np.array([-1000.0, 1000.0]), TransformType.BIEXPONENTIAL, **x_params)
+            ax.axvspan(r_lo, r_hi, color="#000000", alpha=0.04, zorder=0, linewidth=0)
+        if y_scale.transform_type == TransformType.BIEXPONENTIAL and plot_type != "histogram":
+            r_lo, r_hi = apply_transform(np.array([-1000.0, 1000.0]), TransformType.BIEXPONENTIAL, **y_params)
+            ax.axhspan(r_lo, r_hi, color="#000000", alpha=0.04, zorder=0, linewidth=0)
 
     except Exception as exc:
-        logger.debug("Mirror pseudocolor failed: %s", exc)
+        logger.warning("Thumbnail render failed (%s): %s", sample_id, exc, exc_info=True)
         ax.scatter(x_disp, y_disp, s=1.0, c="#58a6ff", alpha=0.5, edgecolors="none")
 
     ax.set_xlim(x_min, x_max)
@@ -319,7 +342,7 @@ class PreviewThumbnail(QFrame):
         self._state = state
         self._sample_id = sample_id
         self._last_params = None
-        self._pending: dict[str, tuple] = {}   # task_id → params
+        # No longer need a _pending dict — we connect directly to each worker
 
         self.setFixedSize(PREVIEW_THUMBNAIL_SIZE[0], PREVIEW_THUMBNAIL_SIZE[1] + 20)
         self.setStyleSheet(
@@ -343,22 +366,24 @@ class PreviewThumbnail(QFrame):
         layout.addWidget(self._lbl)
 
     def refresh(self, x_param: str, y_param: str, node_id: Optional[str]) -> None:
-        self._submit(x_param, y_param, node_id, _THUMB_LIMIT)
+        plot_type = getattr(self._state, "active_plot_type", "pseudocolor")
+        self._submit(x_param, y_param, node_id, _THUMB_LIMIT, plot_type=plot_type)
 
     def preview_gate(self, x_param: str, y_param: str, node_id: Optional[str], gate) -> None:
         """Lightweight update for live gate drawing feedback."""
+        plot_type = getattr(self._state, "active_plot_type", "pseudocolor")
         # Use a slightly lower limit for real-time previews to maintain responsiveness
-        self._submit(x_param, y_param, node_id, 20000, gate)
+        self._submit(x_param, y_param, node_id, 20000, gate, plot_type=plot_type)
 
-    def _submit(self, x_param, y_param, node_id, limit, temp_gate=None):
+    def _submit(self, x_param, y_param, node_id, limit, temp_gate=None, plot_type="pseudocolor"):
         x_scale = _resolve_scale(self._state, x_param)
         y_scale = _resolve_scale(self._state, y_param)
         gate = temp_gate
         gate_id = gate.gate_id if gate else None
 
-        # Cache invalidation check — must include scale info to detect Auto Range!
+        # Cache invalidation check — must include scale info and plot type!
         scale_key = (x_scale.min_val, x_scale.max_val, y_scale.min_val, y_scale.max_val)
-        current_params = (x_param, y_param, node_id, limit, gate_id, scale_key)
+        current_params = (x_param, y_param, node_id, limit, gate_id, scale_key, plot_type)
         if current_params == self._last_params:
             return
         self._last_params = current_params
@@ -393,21 +418,27 @@ class PreviewThumbnail(QFrame):
 
         def task_func():
             return render_preview_to_buffer(
-                self._sample_id, _ev, _xp, _yp, _xs, _ys, _g, _lim, _w, _h)
+                self._sample_id, _ev, _xp, _yp, _xs, _ys, _g, _lim, _w, _h, plot_type)
 
-        tid = task_scheduler.submit(FunctionalTask(task_func, name=f"Thumb-{self._sample_id[:8]}"), None)
-        self._pending[tid] = (x_param, y_param, node_id)
+        worker = task_scheduler.submit(
+            FunctionalTask(task_func, name=f"Thumb-{self._sample_id[:8]}"), None
+        )
+        # Connect directly to this specific worker — avoids the global bus ID mismatch
+        worker.finished.connect(self._on_render_done)
 
-    def on_task_finished(self, task_id: str, results) -> None:
-        if task_id not in self._pending:
-            return
-        self._pending.pop(task_id)
+    def _on_render_done(self, results: dict) -> None:
+        """Called on the UI thread when the off-thread render completes."""
         buf = results.get("result") if isinstance(results, dict) else results
         if not isinstance(buf, (bytes, bytearray)) or not buf:
+            logger.warning("Thumbnail for %s: empty buffer returned", self._sample_id)
             return
         w, h = PREVIEW_THUMBNAIL_SIZE
         qimg = QImage(buf, w, h, QImage.Format.Format_RGBA8888)
         self._img.setPixmap(QPixmap.fromImage(qimg))
+
+    # Legacy hook kept for GroupPreviewPanel compatibility
+    def on_task_finished(self, task_id: str, results) -> None:
+        pass
 
 
 class GroupPreviewPanel(QWidget):
@@ -459,6 +490,7 @@ class GroupPreviewPanel(QWidget):
         eb.subscribe(EventType.GATE_MODIFIED,       self._on_gate_event)
         eb.subscribe(EventType.GATE_DELETED,        self._on_gate_event)
         eb.subscribe(EventType.GATE_PREVIEW,        self._on_gate_preview)
+        eb.subscribe(EventType.DISPLAY_MODE_CHANGED, self._on_axis_changed)
 
     def update_context(self, sample_id: str, node_id: Optional[str]) -> None:
         if sample_id == self._current_sample_id and node_id == self._current_node_id:
@@ -503,8 +535,8 @@ class GroupPreviewPanel(QWidget):
             thumb.refresh(x_param, y_param, self._current_node_id)
 
     def _on_task_finished(self, task_id: str, results) -> None:
-        for thumb in self._thumbnails.values():
-            thumb.on_task_finished(task_id, results)
+        # Legacy — no longer needed since thumbnails connect directly to their workers
+        pass
 
     def _on_axis_changed(self, event: Event) -> None:
         self._refresh_all()

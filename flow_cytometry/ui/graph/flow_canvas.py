@@ -622,6 +622,10 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._ax.xaxis.set_major_locator(FixedLocator(disp_ticks))
             self._ax.xaxis.set_major_formatter(FixedFormatter(labels))
             
+            # Option C: Linear region shading for X
+            if self._x_scale.transform_type == TransformType.BIEXPONENTIAL:
+                self._add_linear_region_shading("x")
+            
         if self._display_mode not in (DisplayMode.HISTOGRAM, DisplayMode.CDF):
             if self._y_scale.transform_type != TransformType.LINEAR:
                 raw_ticks, labels = self._build_bio_ticks(
@@ -631,15 +635,31 @@ class FlowCanvas(FigureCanvasQTAgg):
                 self._ax.yaxis.set_major_locator(FixedLocator(disp_ticks))
                 self._ax.yaxis.set_major_formatter(FixedFormatter(labels))
 
+                # Option C: Linear region shading for Y
+                if self._y_scale.transform_type == TransformType.BIEXPONENTIAL:
+                    self._add_linear_region_shading("y")
+
+    def _add_linear_region_shading(self, axis: str) -> None:
+        """Add a subtle shaded band to indicate the linear region of biexponential."""
+        # Typically +/- 1000 in raw data space is the 'squish' zone
+        raw_bounds = np.array([-1000.0, 1000.0])
+        if axis == "x":
+            disp_bounds = self._coordinate_mapper.transform_x(raw_bounds)
+            self._ax.axvspan(disp_bounds[0], disp_bounds[1], color="#000000", alpha=0.03, zorder=0, linewidth=0)
+        else:
+            disp_bounds = self._coordinate_mapper.transform_y(raw_bounds)
+            self._ax.axhspan(disp_bounds[0], disp_bounds[1], color="#000000", alpha=0.03, zorder=0, linewidth=0)
+
     def _build_bio_ticks(self, scale, is_biex):
         """Build FlowJo-canonical tick positions and labels.
     
-        Biexponential: -10^3, 0, 10^3, 10^4, 10^5  (equal visual gaps)
+        Biexponential: -10^3, 0, 10^3, 10^4, 10^5  (FlowJo standard)
         Log:            10^3, 10^4, 10^5
+        The shading band added by _add_linear_region_shading() is the
+        visual indicator for the squish zone — no extra ticks needed.
         """
         import numpy as np
     
-        # Canonical FlowJo positive decades — starts at 10^3, not 10^2
         pos_decades = [10**3, 10**4, 10**5]
         pos_labels  = ["$10^3$", "$10^4$", "$10^5$"]
     
@@ -649,11 +669,8 @@ class FlowCanvas(FigureCanvasQTAgg):
                 scale.min_val is not None and scale.min_val < 0
             )
             if show_neg:
-                # -10^3 is the standard negative tick FlowJo shows
-                neg_decades = [-10**3]
-                neg_labels  = [r"$-10^3$"]
-                raw = np.array(neg_decades + [0] + pos_decades, dtype=float)
-                lbl = neg_labels + ["0"] + pos_labels
+                raw = np.array([-10**3, 0] + pos_decades, dtype=float)
+                lbl = [r"$-10^3$", "0"] + pos_labels
             else:
                 raw = np.array([0] + pos_decades, dtype=float)
                 lbl = ["0"] + pos_labels
@@ -745,20 +762,29 @@ class FlowCanvas(FigureCanvasQTAgg):
             x_vis, y_vis = x_vis[idx], y_vis[idx]
     
         # ── Density estimation ────────────────────────────────────────────────
-        N_BINS = int(512 * self._quality_multiplier)
+        # Adaptive bin count and sigma based on event density
+        n_points = len(x_vis)
+        N_BINS = int(min(512, max(64, np.sqrt(n_points) * 1.5)) * self._quality_multiplier)
+        sigma = max(0.8, 1.5 * (N_BINS / 512))
+
         H = fast_hist2d(
             y_vis, x_vis,
             range=[[y_lo, y_hi], [x_lo, x_hi]],
             bins=N_BINS,
         )
-        H_smooth = gaussian_filter(H.astype(np.float64), sigma=1.5)
+        H_smooth = gaussian_filter(H.astype(np.float64), sigma=sigma)
     
-        # ── Per-event density lookup ──────────────────────────────────────────
+        # ── Per-event density lookup (bilinear interpolation) ─────────────────
+        # Nearest-neighbour (H_smooth[y_idx, x_idx]) makes events in the same
+        # bin share an identical colour, creating a visible grid / "pixelated"
+        # pattern. Bilinear interpolation blends between neighbouring bins for
+        # smooth FlowJo-quality density gradients.
         x_span = max(x_hi - x_lo, 1e-12)
         y_span = max(y_hi - y_lo, 1e-12)
-        x_idx = np.clip(((x_vis - x_lo) / x_span * N_BINS).astype(int), 0, N_BINS - 1)
-        y_idx = np.clip(((y_vis - y_lo) / y_span * N_BINS).astype(int), 0, N_BINS - 1)
-        densities = H_smooth[y_idx, x_idx]
+        x_frac = np.clip((x_vis - x_lo) / x_span * N_BINS - 0.5, 0, N_BINS - 1)
+        y_frac = np.clip((y_vis - y_lo) / y_span * N_BINS - 0.5, 0, N_BINS - 1)
+        from scipy.ndimage import map_coordinates
+        densities = map_coordinates(H_smooth, [y_frac, x_frac], order=1, mode='nearest')
     
         # FIX 2: Equal Probability (Percentile) Normalization.
         # This converts linear density into a percentile, inflating sparse populations
@@ -793,73 +819,76 @@ class FlowCanvas(FigureCanvasQTAgg):
     def _draw_contour(self, x: np.ndarray, y: np.ndarray) -> None:
         """Contour density plot using 2D histogram."""
         valid = np.isfinite(x) & np.isfinite(y)
-        x, y = x[valid], y[valid]
+        x_vis, y_vis = x[valid], y[valid]
 
-        if len(x) < 100 or np.ptp(x) == 0 or np.ptp(y) == 0:
-            self._draw_dot(x, y)
+        if len(x_vis) < 50:
+            self._draw_dot(x_vis, y_vis)
             return
 
-        # Build 2D histogram for contour
-        h, xedges, yedges = np.histogram2d(x, y, bins=128)
-        h = h.T  # Transpose for contour orientation
+        x_lo, x_hi = self._ax.get_xlim()
+        y_lo, y_hi = self._ax.get_ylim()
 
-        # Smooth slightly with a simple box filter
-        from scipy.ndimage import uniform_filter
-        h = uniform_filter(h, size=3)
+        # Adaptive binning for contour
+        n_points = len(x_vis)
+        n_bins = int(min(256, max(64, np.sqrt(n_points))))
+        
+        from fast_histogram import histogram2d
+        h = histogram2d(y_vis, x_vis, bins=n_bins, range=[[y_lo, y_hi], [x_lo, x_hi]])
+        
+        # Smooth for cleaner contours
+        from scipy.ndimage import gaussian_filter
+        sigma = max(0.8, 1.5 * (n_bins / 128))
+        h_smooth = gaussian_filter(h.astype(np.float64), sigma=sigma)
 
-        xcenters = (xedges[:-1] + xedges[1:]) / 2
-        ycenters = (yedges[:-1] + yedges[1:]) / 2
+        x_grid = np.linspace(x_lo, x_hi, n_bins)
+        y_grid = np.linspace(y_lo, y_hi, n_bins)
 
         self._ax.contourf(
-            xcenters, ycenters, h,
-            levels=15,
-            cmap="inferno",
+            x_grid, y_grid, h_smooth,
+            levels=12,
+            cmap="magma",
         )
         self._ax.contour(
-            xcenters, ycenters, h,
-            levels=8,
-            colors=Colors.FG_DISABLED,
-            linewidths=0.3,
-            alpha=0.5,
+            x_grid, y_grid, h_smooth,
+            levels=6,
+            colors="#FFFFFF",
+            alpha=0.3,
+            linewidths=0.5,
         )
 
     def _draw_density(self, x: np.ndarray, y: np.ndarray) -> None:
-        """2D KDE density plot."""
+        """2D density plot using imshow (faster than KDE)."""
         valid = np.isfinite(x) & np.isfinite(y)
-        x, y = x[valid], y[valid]
+        x_vis, y_vis = x[valid], y[valid]
 
-        if len(x) < 100 or np.ptp(x) == 0 or np.ptp(y) == 0:
-            self._draw_dot(x, y)
+        if len(x_vis) < 50:
+            self._draw_dot(x_vis, y_vis)
             return
 
-        # Subsample for KDE performance
-        n = len(x)
-        if n > 20_000:
-            idx = np.random.choice(n, 20_000, replace=False)
-            x_sub, y_sub = x[idx], y[idx]
-        else:
-            x_sub, y_sub = x, y
+        x_lo, x_hi = self._ax.get_xlim()
+        y_lo, y_hi = self._ax.get_ylim()
 
-        try:
-            from scipy.stats import gaussian_kde
-            xy = np.vstack([x_sub, y_sub])
-            kde = gaussian_kde(xy, bw_method=0.15)
+        n_points = len(x_vis)
+        n_bins = int(min(512, max(64, np.sqrt(n_points) * 1.5)))
+        
+        from fast_histogram import histogram2d
+        h = histogram2d(y_vis, x_vis, bins=n_bins, range=[[y_lo, y_hi], [x_lo, x_hi]])
+        
+        from scipy.ndimage import gaussian_filter
+        sigma = max(0.8, 1.5 * (n_bins / 256))
+        h_smooth = gaussian_filter(h.astype(np.float64), sigma=sigma)
 
-            # Evaluate on a grid
-            xmin, xmax = x.min(), x.max()
-            ymin, ymax = y.min(), y.max()
-            xx, yy = np.mgrid[xmin:xmax:128j, ymin:ymax:128j]
-            positions = np.vstack([xx.ravel(), yy.ravel()])
-            density = kde(positions).reshape(xx.shape)
+        # Log scaling for density visualization (FlowJo style)
+        h_log = np.log1p(h_smooth)
 
-            self._ax.pcolormesh(
-                xx, yy, density,
-                cmap="inferno",
-                shading="auto",
-            )
-        except Exception as exc:
-            logger.warning("KDE failed, falling back to hexbin: %s", exc)
-            self._draw_pseudocolor(x, y)
+        self._ax.imshow(
+            h_log,
+            extent=[x_lo, x_hi, y_lo, y_hi],
+            origin='lower',
+            cmap="viridis",
+            aspect='auto',
+            interpolation='gaussian',
+        )
 
     def _draw_histogram(self, x: np.ndarray) -> None:
         """1-D histogram."""
@@ -877,14 +906,20 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._show_empty()
             return
 
-        self._ax.hist(
+        n_points = len(x_data)
+        n_bins = min(256, max(64, int(np.sqrt(n_points) * 2)))
+
+        counts, bins, patches = self._ax.hist(
             x_data,
-            bins=256,
+            bins=n_bins,
             color=Colors.ACCENT_PRIMARY,
             alpha=0.7,
             edgecolor="none",
-            density=True,
+            density=False,
         )
+        # Apply padding to top of histogram
+        if len(counts) > 0:
+            self._ax.set_ylim(0, counts.max() * 1.1)
         self._ax.set_xlabel(self._x_label, fontsize=9, color=Colors.FG_SECONDARY)
         self._ax.set_ylabel("Density", fontsize=9, color=Colors.FG_SECONDARY)
 

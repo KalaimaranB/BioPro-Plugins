@@ -442,15 +442,18 @@ class GraphWindow(QWidget):
         # that passed all parent gates, so percentile-based range detection will
         # correctly zoom to that cluster instead of spanning the full instrument range.
         # ─────────────────────────────────────────────────────────────────
-        if x_scale_active.min_val is None or x_scale_active.max_val is None:
-            if x_ch in events.columns:
-                vmin, vmax = calculate_auto_range(events[x_ch].values, x_scale_active.transform_type)
-                x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
+        # Always recompute min/max from the current sample's actual data.
+        # The cached scale in channel_scales carries the transform type and
+        # logicle params (user preference), but min/max must reflect THIS
+        # sample and THIS channel — reusing a stale min/max from a previous
+        # channel combination causes SSC-A to inherit FSC-A's range, etc.
+        if x_ch in events.columns:
+            vmin, vmax = calculate_auto_range(events[x_ch].values, x_scale_active.transform_type)
+            x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
 
-        if y_scale_active.min_val is None or y_scale_active.max_val is None:
-            if y_ch in events.columns:
-                vmin, vmax = calculate_auto_range(events[y_ch].values, y_scale_active.transform_type)
-                y_scale_active.min_val, y_scale_active.max_val = float(vmin), float(vmax)
+        if y_ch in events.columns:
+            vmin, vmax = calculate_auto_range(events[y_ch].values, y_scale_active.transform_type)
+            y_scale_active.min_val, y_scale_active.max_val = float(vmin), float(vmax)
     
         # ── PERSIST THE ESTIMATED SCALES ──
         # This ensures the global state (and thus the Group Preview) 
@@ -528,6 +531,13 @@ class GraphWindow(QWidget):
         mode = self._display_combo.currentData()
         if mode:
             self._canvas.set_display_mode(mode)
+            # Update global state and notify subscribers (e.g. thumbnails)
+            self._state.active_plot_type = mode.value
+            self._state.event_bus.publish(Event(
+                type=EventType.DISPLAY_MODE_CHANGED,
+                data={"mode": mode.value},
+                source="GraphWindow"
+            ))
 
     def _set_render_quality(self, mode: str) -> None:
         """Update render quality state and sync buttons."""
