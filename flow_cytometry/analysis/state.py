@@ -14,6 +14,7 @@ analysis engines so that:
 """
 
 from __future__ import annotations
+from typing import TYPE_CHECKING
 
 import logging
 from dataclasses import dataclass, field
@@ -28,6 +29,10 @@ from .compensation import CompensationMatrix
 from .experiment import Experiment, Sample, SampleRole, WorkflowTemplate
 from .scaling import AxisScale
 from .event_bus import EventBus, Event, EventType
+
+if TYPE_CHECKING:
+    from .axis_manager import AxisManager
+    from .population_service import PopulationService
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +71,11 @@ class FlowState(PluginState):
     # ── Transformation State ──────────────────────────────────────────
     channel_scales: dict[str, AxisScale] = field(default_factory=dict)
     
+    # ── Services ──────────────────────────────────────────────────────
+    # Initialized in MainPanel but held here for easy access
+    axis_manager: Optional[AxisManager] = None
+    population_service: Optional[PopulationService] = None
+
     # ── Event System ──────────────────────────────────────────────────
     # All state changes are published as events via this bus
     event_bus: EventBus = field(default_factory=EventBus)
@@ -87,6 +97,24 @@ class FlowState(PluginState):
                 data={"mode": value},
                 source="FlowState"
             ))
+
+    def to_dict(self) -> dict:
+        """Standard serialization for undo history snapshots."""
+        # Avoid recursive asdict() which crashes on QObjects like event_bus
+        return {
+            "experiment": self.experiment.to_dict() if hasattr(self.experiment, "to_dict") else None,
+            "compensation": self.compensation.to_dict() if hasattr(self.compensation, "to_dict") else None,
+            "current_sample_id": self.current_sample_id,
+            "current_gate_id": self.current_gate_id,
+            "active_x_param": self.active_x_param,
+            "active_y_param": self.active_y_param,
+            "active_transform_x": self.active_transform_x,
+            "active_transform_y": self.active_transform_y,
+            "active_plot_type": self.active_plot_type,
+            "channel_scales": {k: v.to_dict() for k, v in self.channel_scales.items()},
+            "auto_range_on_quality": self.auto_range_on_quality,
+            "render_quality": self.render_quality,
+        }
 
     # ── Serialization ─────────────────────────────────────────────────
 

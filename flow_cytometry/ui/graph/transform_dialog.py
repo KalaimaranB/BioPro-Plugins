@@ -13,6 +13,7 @@ from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtGui import QDoubleValidator
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QDialog,
     QFormLayout,
     QGridLayout,
@@ -161,6 +162,13 @@ class AxisTransformPanel(QWidget):
         grid_range.addWidget(btn_max_down, 1, 2)
         grid_range.addWidget(btn_max_up, 1, 3)
         
+        # Outlier percentile
+        grid_range.addWidget(QLabel("Outliers:"), 2, 0)
+        self._outlier_combo = QComboBox()
+        self._outlier_combo.addItems(["0%", "0.01%", "0.1% (Def)", "0.5%", "1%", "2%", "5%"])
+        self._outlier_combo.currentIndexChanged.connect(self._on_outlier_changed)
+        grid_range.addWidget(self._outlier_combo, 2, 1, 1, 3)
+        
         range_layout.addLayout(grid_range)
         layout.addWidget(range_box)
         
@@ -307,6 +315,21 @@ class AxisTransformPanel(QWidget):
         self._slider_a.setValue(int(self._scale.logicle_a * 10))
         self._lbl_a.setText(f"{self._scale.logicle_a:.1f}")
         
+        # Outlier combo
+        percentiles = [0.0, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0]
+        try:
+            # Find closest match if not exact
+            best_idx = 2 # default 0.1%
+            min_diff = 100.0
+            for i, p in enumerate(percentiles):
+                diff = abs(p - self._scale.outlier_percentile)
+                if diff < min_diff:
+                    min_diff = diff
+                    best_idx = i
+            self._outlier_combo.setCurrentIndex(best_idx)
+        except Exception:
+            self._outlier_combo.setCurrentIndex(2)
+        
         self._logicle_box.setVisible(self._scale.transform_type == TransformType.BIEXPONENTIAL)
         
         self._updating_ui = False
@@ -420,6 +443,15 @@ class AxisTransformPanel(QWidget):
         if not self._updating_ui:
             self._scale.logicle_a = float_val
             self._emit_change()
+
+    def _on_outlier_changed(self, index: int) -> None:
+        if self._updating_ui:
+            return
+        percentiles = [0.0, 0.01, 0.1, 0.5, 1.0, 2.0, 5.0]
+        if 0 <= index < len(percentiles):
+            self._scale.outlier_percentile = percentiles[index]
+            # Changing outliers should trigger a re-calculation of the auto-range
+            self._on_auto_range()
 
     def _on_reset_logicle_defaults(self) -> None:
         """Reset W, M, A to standard logicle defaults."""

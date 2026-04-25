@@ -582,7 +582,7 @@ class CytoMetricsPanel(PluginBase):
         task_scheduler.task_error.connect(self._on_loader_error_handler)
 
     def _on_loader_finished_handler(self, tid, results):
-        if hasattr(self, '_loader_task_id') and tid == self._loader_task_id:
+        if hasattr(self, '_loader_task_id') and self._loader_task_id and tid == getattr(self._loader_task_id, 'task_id', None):
             from biopro.core import task_scheduler
             try:
                 task_scheduler.task_finished.disconnect(self._on_loader_finished_handler)
@@ -594,7 +594,7 @@ class CytoMetricsPanel(PluginBase):
             self._on_ai_loaded(res.get("success", False), res.get("pipelines", {}), "Loaded")
 
     def _on_loader_error_handler(self, tid, error):
-        if hasattr(self, '_loader_task_id') and tid == self._loader_task_id:
+        if hasattr(self, '_loader_task_id') and self._loader_task_id and tid == getattr(self._loader_task_id, 'task_id', None):
             from biopro.core import task_scheduler
             try:
                 task_scheduler.task_finished.disconnect(self._on_loader_finished_handler)

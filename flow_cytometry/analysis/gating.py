@@ -693,7 +693,7 @@ class GateNode:
             "name": self.name,
             "negated": self.negated,
             "gate": self.gate.to_dict() if self.gate else None,
-            "statistics": self.statistics,
+            # Statistics are NOT serialized to prevent stale data from being persisted
             "children": [child.to_dict() for child in self.children],
         }
 

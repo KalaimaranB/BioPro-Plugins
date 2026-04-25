@@ -34,6 +34,9 @@ class AxisScale:
     logicle_w: float = 0.5       # Width Basis (linear range around 0)
     logicle_m: float = 4.5       # Positive decades
     logicle_a: float = 0.0       # Extra negative decades
+    
+    # Outlier bounds (percentile to ignore at each end)
+    outlier_percentile: float = 0.1  # Default to 0.1% (p0.1 and p99.9)
 
     def copy(self) -> "AxisScale":
         return AxisScale(
@@ -44,6 +47,7 @@ class AxisScale:
             logicle_w=self.logicle_w,
             logicle_m=self.logicle_m,
             logicle_a=self.logicle_a,
+            outlier_percentile=self.outlier_percentile,
         )
 
     def to_dict(self) -> dict:
@@ -56,11 +60,12 @@ class AxisScale:
             "logicle_w": self.logicle_w,
             "logicle_m": self.logicle_m,
             "logicle_a": self.logicle_a,
+            "outlier_percentile": self.outlier_percentile,
         }
 
 
 def calculate_auto_range(
-    data: np.ndarray, transform_type: TransformType
+    data: np.ndarray, transform_type: TransformType, outlier_percentile: float = 0.1
 ) -> tuple[float, float]:
     """Calculate a robust display range ignoring extreme outliers."""
     if len(data) == 0:
@@ -72,20 +77,27 @@ def calculate_auto_range(
     if len(valid_data) == 0:
         return (0.0, 1.0)
 
-    if transform_type == TransformType.LINEAR:
-        # p99.9 is deliberate: for 300k events, p99.95 picks up ~150 saturation
-        # spike events that inflate the ceiling and squish all data to the bottom.
-        # p99.9 drops those spikes while still capturing the biological range.
-        p_min = float(np.percentile(valid_data, 0.1))
-        p_max = float(np.percentile(valid_data, 99.9))
+    # Calculate percentiles based on outlier_percentile parameter
+    p_min = float(np.percentile(valid_data, outlier_percentile))
+    p_max = float(np.percentile(valid_data, 100.0 - outlier_percentile))
 
+    if transform_type == TransformType.LINEAR:
         # Floor: anchor at 0 so scatter channels always show the origin.
         # Allow slightly negative for compensated/gated subsets.
         floor = min(0.0, p_min)
 
-        # Ceiling: never less than the standard 18-bit instrument range so
-        # FSC/SSC always fills the axis at full scale even with sparse data.
-        ceiling = max(p_max, 262144.0)
+        # Ceiling: No longer hardcoded to 262144. Instead, use p_max plus 5% headroom.
+        # This fixes squishing for small-range channels like Time.
+        # We only snap to 262144 if the data is already approaching it (e.g. FSC/SSC).
+        span = p_max - floor
+        if span <= 0:
+            span = 1.0
+        
+        ceiling = p_max + span * 0.05
+        
+        # Heuristic: If it looks like a standard 18-bit channel, keep the full scale.
+        if p_max > 200000 and p_max < 262144:
+            ceiling = 262144.0
 
         return (floor, ceiling)
         
@@ -93,34 +105,27 @@ def calculate_auto_range(
         pos_data = valid_data[valid_data > 0]
         if len(pos_data) == 0:
             return (0.1, 10.0)
-        p_min = np.percentile(pos_data, 0.1)
-        p_max = np.percentile(valid_data, 99.9)
-        return (p_min * 0.5, p_max * 2.0)
+        p_min_pos = np.percentile(pos_data, outlier_percentile)
+        return (p_min_pos * 0.5, p_max * 2.0)
         
     elif transform_type == TransformType.BIEXPONENTIAL:
-        # Use actual data percentiles as FlowJo does — no arbitrary hardcoded
-        # floor/ceiling.  This makes the default view data-driven.
-        p_lo = float(np.percentile(valid_data, 0.5))
-        p_hi = float(np.percentile(valid_data, 99.5))
-
-        if p_lo < 0:
+        # p_min and p_max already calculated above using outlier_percentile
+        if p_min < 0:
             # Compensated fluorescence: show the negative tail with 5% headroom.
-            span = max(p_hi - p_lo, 1.0)
-            display_min = p_lo - span * 0.05
+            span = max(p_max - p_min, 1.0)
+            display_min = p_min - span * 0.05
         else:
             # Positive-only data (FSC, SSC, bright fluorescence).
             # Stay positive: min = 95% of the data floor so the lowest events
-            # sit just inside the left/bottom edge.  Do NOT use span-based
-            # padding here — it would subtract a huge number and push min
-            # far into negative territory.
-            display_min = p_lo * 0.95
+            # sit just inside the left/bottom edge.
+            display_min = p_min * 0.95
 
-        span = max(p_hi - p_lo, 1.0)
-        display_max = p_hi + span * 0.05
+        span = max(p_max - p_min, 1.0)
+        display_max = p_max + span * 0.05
         return (display_min, display_max)
         
     else:
-        return (valid_data.min(), valid_data.max())
+        return (p_min, p_max)
 
 def detect_logicle_top(data) -> float:
     """Return the Logicle T (Top) parameter for this channel's data.

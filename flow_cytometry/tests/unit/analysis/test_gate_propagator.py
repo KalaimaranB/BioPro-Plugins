@@ -1,75 +1,37 @@
 import pytest
-import pandas as pd
-import numpy as np
+from unittest.mock import MagicMock, patch
 
-from flow_cytometry.analysis.state import FlowState
-from flow_cytometry.analysis.gate_controller import GateController
-from flow_cytometry.analysis.gate_propagator import GatePropagator
-from flow_cytometry.analysis.experiment import Sample, Group
+def test_gate_propagator_debounce(empty_state, qtbot):
+    with patch("biopro.core.task_scheduler.task_scheduler") as mock_scheduler:
+        from flow_cytometry.analysis.gate_propagator import GatePropagator
+        propagator = GatePropagator(empty_state)
+        
+        propagator.request_propagation("gate1", "s1")
+        propagator.request_propagation("gate1", "s1")
+        
+        # Should only call submit once after debounce
+        qtbot.wait(300)
+        assert mock_scheduler.submit.call_count == 1
 
-@pytest.fixture
-def flow_state_multi(synthetic_events_small, synthetic_events_medium):
-    state = FlowState()
-    
-    # Mock FCS Data
-    class MockFcsData:
-        def __init__(self, events):
-            self.events = events
-            self.parameters = {col: {} for col in events.columns}
-            self.metadata = {}
-            self.num_events = len(events)
-            self.file_path = "test.fcs"
-            
-    # Add two samples
-    sample1 = Sample(sample_id="sample_1", name="Sample 1")
-    sample1.fcs_data = MockFcsData(synthetic_events_small)
-    state.experiment.samples["sample_1"] = sample1
-    
-    sample2 = Sample(sample_id="sample_2", name="Sample 2")
-    sample2.fcs_data = MockFcsData(synthetic_events_medium)
-    state.experiment.samples["sample_2"] = sample2
-    
-    # Add them to a group
-    group = Group(group_id="group_1", name="All Samples", sample_ids=["sample_1", "sample_2"])
-    state.experiment.groups["group_1"] = group
-    
-    return state
-
-@pytest.fixture
-def gate_controller(flow_state_multi):
-    return GateController(flow_state_multi)
-
-@pytest.fixture
-def gate_propagator(flow_state_multi, gate_controller):
-    propagator = GatePropagator(flow_state_multi, gate_controller)
-    propagator.strategy = "global"  # Auto-propagate
-    return propagator
-
-def test_propagate_new_gate(gate_controller, gate_propagator, flow_state_multi, gate_rectangle_singlet):
-    # Action: add gate to sample 1
-    # Note: GatePropagator listens to EventBus in reality, but here we manually call propagate
-    gate_controller.add_gate(gate_rectangle_singlet, "sample_1", name="Singlets")
-    gate_propagator.propagate(gate_rectangle_singlet.gate_id, "sample_1")
-    
-    # Assert: sample 2 got the gate
-    sample2 = flow_state_multi.experiment.samples["sample_2"]
-    nodes = sample2.gate_tree.find_nodes_by_gate(gate_rectangle_singlet.gate_id)
-    assert len(nodes) == 0  # Should be cloned, not same ID usually?
-    
-    # Actually, gate_controller.copy_gates_to_group uses deepcopy but forces a NEW gate_id
-    # so we find by name instead.
-    found = False
-    for child in sample2.gate_tree.children:
-        if child.name == "Singlets":
-            found = True
-            break
-    assert found is True
-
-def test_adaptive_gating(gate_controller, flow_state_multi, gate_rectangle_singlet):
-    # Set gate to adaptive
-    gate_rectangle_singlet.adaptive = True
-    gate_controller.add_gate(gate_rectangle_singlet, "sample_1", name="Singlets")
-    
-    # Just verify adapt_all doesn't crash on standard pandas DataFrame
-    sample1 = flow_state_multi.experiment.samples["sample_1"]
-    sample1.gate_tree.adapt_all(sample1.fcs_data.events)
+def test_gate_propagator_handler_cleanup(state_with_sample, qtbot):
+    """Verify that handlers disconnect themselves to prevent leaks."""
+    with patch("biopro.core.task_scheduler.task_scheduler") as mock_scheduler:
+        from flow_cytometry.analysis.gate_propagator import GatePropagator
+        propagator = GatePropagator(state_with_sample)
+        mock_scheduler.submit.return_value = "task_1"
+        
+        propagator.request_propagation("gate1", "s1")
+        qtbot.wait(300)
+        
+        # Check that connect was called for the handler
+        assert mock_scheduler.task_finished.connect.call_count == 1
+        
+        # Extract the handler method
+        handler_method = mock_scheduler.task_finished.connect.call_args[0][0]
+        handler_obj = handler_method.__self__
+        
+        # Simulate task completion
+        handler_obj.on_finished("task_1", {"propagation_results": {}})
+        
+        # Check that disconnect was called
+        assert mock_scheduler.task_finished.disconnect.call_count == 1

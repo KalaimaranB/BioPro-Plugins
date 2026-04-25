@@ -92,6 +92,7 @@ class EventBus:
         self._event_history: list[Event] = []
         self._enable_logging = enable_logging
         self._paused = False
+        self._queue: list[Event] = []
     
     def subscribe(self, event_type: EventType, handler: Callable[[Event], None]) -> Callable:
         """Register a handler for a specific event type.
@@ -136,9 +137,7 @@ class EventBus:
         return unsubscribe
     
     def publish(self, event: Event) -> None:
-        """Broadcast an event to all subscribers.
-        
-        If the bus is paused, events are queued but not delivered.
+        """Publish an event to all subscribers.
         
         Args:
             event: The event to broadcast.
@@ -146,11 +145,12 @@ class EventBus:
         if self._enable_logging:
             logger.debug(f"Published: {event}")
         
+        if self._paused:
+            self._queue.append(event)
+            return
+
         # Store in history for debugging/replay
         self._event_history.append(event)
-        
-        if self._paused:
-            return
         
         # Deliver to specific event type subscribers
         if event.type in self._subscribers:
@@ -169,12 +169,16 @@ class EventBus:
                     logger.error(f"Event handler error (any): {e}", exc_info=True)
     
     def pause(self) -> None:
-        """Pause event delivery (events are still recorded in history)."""
+        """Pause event dispatching."""
         self._paused = True
+        self._queue = []
     
     def resume(self) -> None:
-        """Resume event delivery."""
+        """Resume event dispatching and flush queued events."""
         self._paused = False
+        for event in self._queue:
+            self.publish(event)
+        self._queue = []
     
     def clear_history(self) -> None:
         """Clear the event history (for memory management)."""

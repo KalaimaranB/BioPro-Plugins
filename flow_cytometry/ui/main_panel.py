@@ -49,6 +49,7 @@ from .graph.graph_manager import GraphManager
 from ..analysis.state import FlowState
 from ..analysis.gate_controller import GateController
 from ..analysis.gate_propagator import GatePropagator
+from ..analysis.event_bus import Event, EventType
 
 logger = logging.getLogger(__name__)
 
@@ -85,13 +86,42 @@ class FlowCytometryPanel(PluginBase):
     # state_changed and status_message are now provided by PluginBase
     results_ready = pyqtSignal(object)
 
+    def _setup_logging(self) -> None:
+        """Initialize plugin-specific logging to a temporary file."""
+        import tempfile
+        import os
+        from logging.handlers import RotatingFileHandler
+
+        log_file = os.path.join(tempfile.gettempdir(), "biopro_flow.log")
+        handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024, backupCount=3)
+        formatter = logging.Formatter(
+            '%(asctime)s [%(name)s] %(levelname)s: %(message)s'
+        )
+        handler.setFormatter(formatter)
+        
+        # Get the root logger for this plugin's package
+        plugin_logger = logging.getLogger("biopro.plugins.flow_cytometry")
+        plugin_logger.setLevel(logging.DEBUG)
+        plugin_logger.addHandler(handler)
+        
+        # Ensure the handler is removed on shutdown to avoid leaks
+        self._log_handler = handler
+        
+        logger.info(f"Plugin logging initialized. Writing to: {log_file}")
+
     def __init__(self, plugin_id: str = "flow_cytometry", parent=None) -> None:
         super().__init__(plugin_id, parent)
+        self._setup_logging()
 
         # ── State ─────────────────────────────────────────────────────
         self.state = FlowState()
 
         # ── Analysis engines ──────────────────────────────────────────
+        from ..analysis.axis_manager import AxisManager
+        from ..analysis.population_service import PopulationService
+        self.state.axis_manager = AxisManager(self.state, parent=self)
+        self.state.population_service = PopulationService(self.state)
+
         self._gate_controller = GateController(self.state, parent=self)
         self._gate_propagator = GatePropagator(self.state, parent=self)
 
@@ -103,7 +133,30 @@ class FlowCytometryPanel(PluginBase):
         # ── Build UI ──────────────────────────────────────────────────
         self.setStyleSheet(f"background: {Colors.BG_DARKEST};")
         self._setup_ui()
+        
+        # ── Event System Bridge ───────────────────────────────────────
+        # Forward internal events to SDK CentralEventBus and trigger undo snapshots
+        self.state.event_bus.subscribe(None, self._bridge_event)
+        
         self.status_message.emit("Flow Cytometry workspace ready.")
+
+    def _bridge_event(self, event: Event) -> None:
+        """Forward internal events to the SDK's CentralEventBus."""
+        # 1. Publish to SDK (string-topic, payload)
+        topic = f"{self.plugin_id}.{event.type.value}"
+        self.publish_event(topic, event.data)
+        
+        # 2. Trigger undo snapshots for structural changes
+        structural_events = {
+            EventType.GATE_CREATED,
+            EventType.GATE_DELETED,
+            EventType.GATE_MODIFIED,
+            EventType.COMPENSATION_APPLIED,
+            EventType.TRANSFORM_CHANGED,
+        }
+        if event.type in structural_events:
+            self.push_state()
+            self.state_changed.emit()
 
     # ── UI Construction ───────────────────────────────────────────────
 
@@ -233,6 +286,10 @@ class FlowCytometryPanel(PluginBase):
 
         # ── Wire internal signals ─────────────────────────────────────
         self._wire_signals()
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        logger.info(f"FlowCytometryPanel resized: {self.width()}x{self.height()}")
 
     def _wire_signals(self) -> None:
         """Connect internal widget signals to each other and to the
@@ -401,7 +458,7 @@ class FlowCytometryPanel(PluginBase):
             # Delete ALL populations sharing this physical gate
             nodes = sample.gate_tree.find_nodes_by_gate(gate_id)
             for node in nodes:
-                self._gate_controller.remove_population(node.node_id, graph.sample_id)
+                self._gate_controller.remove_population(graph.sample_id, node.node_id)
             self.status_message.emit("Gate and associated populations deleted.")
 
     def _on_copy_gates(self, sample_id: str) -> None:
@@ -547,6 +604,18 @@ class FlowCytometryPanel(PluginBase):
             return
         self.state = state
         self._refresh_all()
+
+    def cleanup(self) -> None:
+        """Resource cleanup on plugin close."""
+        logger.info("Cleaning up Flow Cytometry workspace...")
+        # Stop background timers/workers
+        if hasattr(self, "_gate_propagator"):
+            self._gate_propagator._timer.stop()
+        
+        # Unsubscribe from internal bus to avoid leaks if panel is recreated
+        # (Though usually the whole state is recreated too)
+        
+        super().cleanup()
 
     def export_state(self) -> dict:
         """Package the workspace state for backward compatibility."""

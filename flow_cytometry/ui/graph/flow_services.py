@@ -342,6 +342,31 @@ class GateOverlayRenderer:
         """
         self.mapper = coordinate_mapper
 
+    def render_gate(
+        self,
+        ax: Axes,
+        gate: Gate,
+        is_selected: bool = False,
+    ) -> Optional[OverlayArtists]:
+        """Generic entry point for rendering any gate type using OCP dispatch."""
+        from .gate_registry import GateRegistry
+        
+        # Check if there is a specialized renderer registered
+        # (We use class name as key for now, e.g., 'RectangleGate' -> 'rectangle')
+        type_key = type(gate).__name__.lower().replace("gate", "")
+        handler = GateRegistry.get_overlay_renderer(type_key)
+        
+        if handler:
+            return handler(self, ax, gate, is_selected)
+            
+        # Fallback to internal methods for core gates
+        method_name = f"render_{type_key}"
+        if hasattr(self, method_name):
+            return getattr(self, method_name)(ax, gate, is_selected)
+            
+        logger.warning(f"No renderer found for gate type: {type(gate)}")
+        return None
+
     def render_rectangle(
         self,
         ax: Axes,
@@ -497,7 +522,7 @@ class GateOverlayRenderer:
     def _create_label(self, ax: Axes, gate: Gate, x: float, y: float) -> Line2D | None:
         """Create text label for gate."""
         try:
-            label = gate.name or gate.gate_type.value
+            label = getattr(gate, "name", None) or type(gate).__name__
             text = ax.text(
                 x,
                 y,

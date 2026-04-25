@@ -103,6 +103,24 @@ class GraphWindow(QWidget):
 
         self._setup_ui()
         self._setup_events()
+        logger.info(f"GraphWindow initialized for sample {sample_id}, node {node_id}")
+
+        # Size watcher: some layouts are lazy on macOS, especially in QTabWidget.
+        # We poll for a few seconds until we get a non-zero size.
+        self._size_watcher = QTimer(self)
+        self._size_watcher.timeout.connect(self._check_size_and_render)
+        self._size_watcher.start(250)
+        self._size_attempts = 0
+
+    def _check_size_and_render(self) -> None:
+        self._size_attempts += 1
+        if self.width() > 0 and self.height() > 0:
+            logger.info(f"GraphWindow size watcher: Found size {self.width()}x{self.height()} at attempt {self._size_attempts}")
+            self._size_watcher.stop()
+            self._render_initial()
+        elif self._size_attempts > 20: # 5 seconds
+            logger.warning("GraphWindow size watcher: Timed out waiting for non-zero size")
+            self._size_watcher.stop()
 
     def _setup_events(self) -> None:
         """Subscribe to relevant state events."""
@@ -264,8 +282,11 @@ class GraphWindow(QWidget):
         layout.addLayout(axis_row)
 
         # ── Flow Canvas (the actual matplotlib plot) ──────────────────
-        self._canvas = FlowCanvas(self._state)
+        self._canvas = FlowCanvas(self._state, self)
+        self._canvas.setMinimumSize(400, 400)
         layout.addWidget(self._canvas, stretch=1)
+        logger.info(f"GraphWindow._setup_ui: Canvas added to layout, canvas_size={self._canvas.width()}x{self._canvas.height()}")
+        self._canvas.show()
 
         # Wire canvas signals
         self._canvas.gate_created.connect(self._on_gate_created)
@@ -385,21 +406,24 @@ class GraphWindow(QWidget):
 
     def _render_initial(self) -> None:
         """Render the initial plot from the sample's data."""
+        logger.info(f"GraphWindow._render_initial: sample={self._sample_id}, node={self._node_id}")
         sample = self._state.experiment.samples.get(self._sample_id)
         if sample is None or sample.fcs_data is None:
+            logger.warning(f"GraphWindow._render_initial: Sample {self._sample_id} not found or has no FCS data")
             return
     
         events = sample.fcs_data.events
         if events is None:
+            logger.warning(f"GraphWindow._render_initial: Sample {self._sample_id} has no events")
             return
     
-        # If gated, apply the population hierarchy to get the actual subset
-        is_gated = False
-        if self._node_id:
-            node = sample.gate_tree.find_node_by_id(self._node_id)
-            if node:
-                events = node.apply_hierarchy(events)
-                is_gated = True
+        # Use PopulationService to get the actual subset (respects negations, etc)
+        events = self._state.population_service.get_gated_events(self._sample_id, self._node_id)
+        if events is None:
+            logger.warning(f"GraphWindow._render_initial: PopulationService returned None for node {self._node_id}")
+            return
+        
+        logger.info(f"GraphWindow._render_initial: Gated events size = {len(events)}")
     
         # Guard against empty gate result
         if len(events) == 0:
@@ -448,11 +472,19 @@ class GraphWindow(QWidget):
         # sample and THIS channel — reusing a stale min/max from a previous
         # channel combination causes SSC-A to inherit FSC-A's range, etc.
         if x_ch in events.columns:
-            vmin, vmax = calculate_auto_range(events[x_ch].values, x_scale_active.transform_type)
+            vmin, vmax = calculate_auto_range(
+                events[x_ch].values, 
+                x_scale_active.transform_type,
+                outlier_percentile=x_scale_active.outlier_percentile
+            )
             x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
 
         if y_ch in events.columns:
-            vmin, vmax = calculate_auto_range(events[y_ch].values, y_scale_active.transform_type)
+            vmin, vmax = calculate_auto_range(
+                events[y_ch].values, 
+                y_scale_active.transform_type,
+                outlier_percentile=y_scale_active.outlier_percentile
+            )
             y_scale_active.min_val, y_scale_active.max_val = float(vmin), float(vmax)
     
         # ── PERSIST THE ESTIMATED SCALES ──
@@ -472,7 +504,11 @@ class GraphWindow(QWidget):
         # Notify the system (and Group Preview) that the scale has been finalized
         self._state.event_bus.publish(Event(
             type=EventType.AXIS_RANGE_CHANGED,
-            data={"channel_x": x_ch, "channel_y": y_ch},
+            data={
+                "sample_id": self._sample_id,
+                "x_param": x_ch, "y_param": y_ch,
+                "x_scale": self._x_scale, "y_scale": self._y_scale
+            },
             source="GraphWindow"
         ))
 
@@ -624,15 +660,15 @@ class GraphWindow(QWidget):
             
             if axis_id == "x":
                 self._x_scale = new_scale.copy()
-                x_ch = self._x_combo.currentData() or self._x_combo.currentText()
-                self._state.channel_scales[x_ch] = self._x_scale.copy()
-                self.axis_scale_sync_requested.emit(x_ch, self._x_scale)
+                # Use the channel name captured when the dialog was opened (Bug #8 fix)
+                self._state.channel_scales[x_name] = self._x_scale.copy()
+                self.axis_scale_sync_requested.emit(x_name, self._x_scale)
                 self._notify_axis_change()
             else:
                 self._y_scale = new_scale.copy()
-                y_ch = self._y_combo.currentData() or self._y_combo.currentText()
-                self._state.channel_scales[y_ch] = self._y_scale.copy()
-                self.axis_scale_sync_requested.emit(y_ch, self._y_scale)
+                # Use the channel name captured when the dialog was opened (Bug #8 fix)
+                self._state.channel_scales[y_name] = self._y_scale.copy()
+                self.axis_scale_sync_requested.emit(y_name, self._y_scale)
                 self._notify_axis_change()
             
             if transform_changed:
@@ -641,7 +677,7 @@ class GraphWindow(QWidget):
                     data={
                         "sample_id": self._sample_id,
                         "axis": axis_id,
-                        "channel": x_ch if axis_id == "x" else y_ch,
+                        "channel": x_name if axis_id == "x" else y_name,
                         "old_type": old_scale.transform_type,
                         "new_type": new_scale.transform_type,
                     },
@@ -686,7 +722,7 @@ class GraphWindow(QWidget):
             return (0.0, 1.0)
     
         scale = self._x_scale if axis == "x" else self._y_scale
-        return calculate_auto_range(events[col].values, scale.transform_type)
+        return calculate_auto_range(events[col].values, scale.transform_type, outlier_percentile=scale.outlier_percentile)
 
     def _update_breadcrumb(self) -> None:
         """Update the breadcrumb navigation bar showing gating path."""
@@ -721,6 +757,10 @@ class GraphWindow(QWidget):
         return lbl
 
     # QComboBox styling unified in FlowComboBox
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        logger.info(f"GraphWindow resized: {self.width()}x{self.height()}")
 
     def _style_transform_btn(self, btn: QPushButton) -> None:
         btn.setStyleSheet(

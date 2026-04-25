@@ -120,30 +120,23 @@ class GateController(QObject):
         if not name:
             name = self.generate_unique_name(sample_id)
 
-        # Find the parent node
-        if parent_node_id:
-            parent_node = sample.gate_tree.find_node_by_id(parent_node_id)
-            if parent_node is None:
-                logger.warning(
-                    "Parent node %s not found. Adding to root.",
-                    parent_node_id,
-                )
-                parent_node = sample.gate_tree
-        else:
-            parent_node = sample.gate_tree
+        # Use PopulationService to add the population
+        child_node = self._state.population_service.add_population(
+            sample_id, gate, parent_node_id, name
+        )
+        if child_node is None:
+            return None
 
-        # Special handling for QuadrantGate — creates 4 child populations
-        if isinstance(gate, QuadrantGate):
-            return self._add_quadrant_gate(gate, sample, parent_node)
-
-        # Add the population node
-        child_node = parent_node.add_child(gate, name=name)
-
-        # Compute initial statistics
-        self._compute_node_stats(child_node, sample)
+        # Compute initial statistics (recursively for Quadrants)
+        def _stats_recursive(n: GateNode):
+            self._compute_node_stats(n, sample)
+            self.gate_stats_updated.emit(sample_id, n.node_id)
+            for child in n.children:
+                _stats_recursive(child)
+        
+        _stats_recursive(child_node)
 
         self.gate_added.emit(sample_id, child_node.node_id)
-        self.gate_stats_updated.emit(sample_id, child_node.node_id)
 
         # Publish to EventBus
         self._state.event_bus.publish(Event(
@@ -168,43 +161,6 @@ class GateController(QObject):
         )
         return child_node.node_id
 
-    def _add_quadrant_gate(
-        self, gate: QuadrantGate, sample: Sample, parent_node: GateNode
-    ) -> str:
-        """Add a QuadrantGate with 4 sub-population children."""
-        quad_node = parent_node.add_child(gate, name="Quadrants")
-
-        # Create 4 child rectangle gates for each quadrant
-        xlim_hi = 1e9   # effectively unbounded
-        xlim_lo = -1e9
-
-        q_defs = [
-            ("Q1 ++", gate.x_mid, xlim_hi,  gate.y_mid, xlim_hi),
-            ("Q2 −+", xlim_lo,   gate.x_mid, gate.y_mid, xlim_hi),
-            ("Q3 −−", xlim_lo,   gate.x_mid, xlim_lo,   gate.y_mid),
-            ("Q4 +−", gate.x_mid, xlim_hi,  xlim_lo,   gate.y_mid),
-        ]
-
-        for name, xmin, xmax, ymin, ymax in q_defs:
-            child_gate = RectangleGate(
-                x_param=gate.x_param,
-                y_param=gate.y_param,
-                x_min=xmin,
-                x_max=xmax,
-                y_min=ymin,
-                y_max=ymax,
-                x_scale=gate.x_scale,
-                y_scale=gate.y_scale,
-            )
-            child_node = quad_node.add_child(child_gate, name=name)
-            self._compute_node_stats(child_node, sample)
-
-        self._compute_node_stats(quad_node, sample)
-
-        # Return the main quadrant node ID
-        self.gate_added.emit(sample.sample_id, quad_node.node_id)
-        self.propagation_requested.emit(gate.gate_id, sample.sample_id)
-        return quad_node.node_id
 
     def modify_gate(
         self, gate_id: str, sample_id: str, **kwargs
@@ -306,16 +262,17 @@ class GateController(QObject):
 
     def remove_population(self, sample_id: str, node_id: str) -> bool:
         """Remove a population node from a sample's tree."""
-        sample = self._state.experiment.samples.get(sample_id)
-        if sample is None:
+        # Find the node first to get its gate_id for the event
+        node = self._state.population_service.find_node(sample_id, node_id)
+        if node is None:
             return False
-
-        node = sample.gate_tree.find_node_by_id(node_id)
-        if node is None or node.parent is None:
-            return False
-
+            
         old_gate_id = node.gate.gate_id if node.gate else None
-        node.parent.remove_child(node_id)
+        
+        # Use PopulationService to remove it
+        success = self._state.population_service.remove_population(sample_id, node_id)
+        if not success:
+            return False
 
         self.gate_removed.emit(sample_id, node_id)
         

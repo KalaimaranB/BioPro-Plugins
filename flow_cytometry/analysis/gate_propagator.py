@@ -37,6 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 from biopro.sdk.core import AnalysisBase, PluginState
+from biopro.core.task_scheduler import task_scheduler
 
 class _PropagationWorker(AnalysisBase):
     """Worker that runs via TaskScheduler in the background.
@@ -192,6 +193,32 @@ class _PropagationWorker(AnalysisBase):
             )
 
 
+class _PropagationHandler(QObject):
+    """Helper to route TaskScheduler signals back to the propagator.
+    
+    Prevents listener leaks by disconnecting on first call and ensuring 
+    only the relevant task_id is processed.
+    """
+    def __init__(self, task_id: str, propagator: 'GatePropagator', parent=None):
+        super().__init__(parent)
+        self._task_id = task_id
+        self._propagator = propagator
+
+    def on_finished(self, tid: str, results: dict):
+        if tid == self._task_id:
+            task_scheduler.task_finished.disconnect(self.on_finished)
+            task_scheduler.task_error.disconnect(self.on_error)
+            self._propagator._on_propagation_finished(tid, results)
+            self.deleteLater()
+
+    def on_error(self, tid: str, error_msg: str):
+        if tid == self._task_id:
+            task_scheduler.task_finished.disconnect(self.on_finished)
+            task_scheduler.task_error.disconnect(self.on_error)
+            self._propagator._on_propagation_error(tid, error_msg)
+            self.deleteLater()
+
+
 class GatePropagator(QObject):
     """Debounced gate propagation manager using TaskScheduler.
 
@@ -237,7 +264,6 @@ class GatePropagator(QObject):
 
     def _execute_propagation(self) -> None:
         """Execute the pending propagation (called after debounce)."""
-        from biopro.core import task_scheduler
         
         self._mutex.lock()
         source_id = self._pending_source_id
@@ -266,35 +292,32 @@ class GatePropagator(QObject):
         task_id = task_scheduler.submit(worker, self._state)
         self._active_task_id = task_id
         
-        def _on_finished(tid, results):
-            if tid != task_id: return
-            task_scheduler.task_finished.disconnect(_on_finished)
-            task_scheduler.task_error.disconnect(_on_error)
-            
-            propagation_results = results.get("propagation_results", {})
-            for sid, res in propagation_results.items():
-                if "error" in res:
-                    logger.warning(f"Propagator error for {sid}: {res['error']}")
-                    continue
-                self._on_sample_updated(sid, res["stats"], res["tree"])
-            
-            self.propagation_complete.emit()
-            logger.debug("Gate propagation complete.")
-
-        def _on_error(tid, error_msg):
-            if tid != task_id: return
-            task_scheduler.task_finished.disconnect(_on_finished)
-            task_scheduler.task_error.disconnect(_on_error)
-            logger.error(f"Gate propagation task failed: {error_msg}")
-            self.propagation_complete.emit()
-
-        task_scheduler.task_finished.connect(_on_finished)
-        task_scheduler.task_error.connect(_on_error)
+        # Use a dedicated handler object to avoid listener leaks and stale closures
+        handler = _PropagationHandler(task_id, self, parent=self)
+        task_scheduler.task_finished.connect(handler.on_finished)
+        task_scheduler.task_error.connect(handler.on_error)
 
         logger.info(
             "Propagating gates from '%s' to %d samples via TaskScheduler.",
             source.display_name, len(targets),
         )
+
+    def _on_propagation_finished(self, task_id: str, results: dict) -> None:
+        """Internal callback for propagation completion."""
+        propagation_results = results.get("propagation_results", {})
+        for sid, res in propagation_results.items():
+            if "error" in res:
+                logger.warning(f"Propagator error for {sid}: {res['error']}")
+                continue
+            self._on_sample_updated(sid, res["stats"], res["tree"])
+        
+        self.propagation_complete.emit()
+        logger.debug("Gate propagation complete.")
+
+    def _on_propagation_error(self, task_id: str, error_msg: str) -> None:
+        """Internal callback for propagation error."""
+        logger.error(f"Gate propagation task failed: {error_msg}")
+        self.propagation_complete.emit()
 
     def _find_targets(self, source_id: str) -> list[Sample]:
         """Find all target samples for propagation."""

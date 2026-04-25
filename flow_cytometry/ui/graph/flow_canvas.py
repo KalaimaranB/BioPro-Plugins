@@ -61,6 +61,7 @@ from .flow_services import (
 )
 
 logger = logging.getLogger(__name__)
+print(f"DEBUG: flow_canvas.py LOADED from {__file__}")
 
 
 class DisplayMode(Enum):
@@ -87,16 +88,16 @@ class GateDrawingMode(Enum):
 
 # Plot area uses a pure white background inside the axes
 # so the dark purple "turbo" outlier dots are perfectly visible.
-_PLOT_BG = "#FFFFFF"
+_PLOT_BG = "#1A1A2E"
 
 _MPL_STYLE = {
     "figure.facecolor": Colors.BG_DARKEST,
     "axes.facecolor": _PLOT_BG,
-    "axes.edgecolor": Colors.BORDER,
-    "axes.labelcolor": Colors.FG_SECONDARY,
-    "xtick.color": Colors.FG_SECONDARY,
-    "ytick.color": Colors.FG_SECONDARY,
-    "text.color": Colors.FG_PRIMARY,
+    "axes.edgecolor": "#FFFFFF",
+    "axes.labelcolor": "#FFFFFF",
+    "xtick.color": "#FFFFFF",
+    "ytick.color": "#FFFFFF",
+    "text.color": "#FFFFFF",
     "grid.color": "#B0B0B0",  # Darker grey for visibility on white background
     "grid.alpha": 0.35,
     "font.size": 9,
@@ -106,9 +107,9 @@ _MPL_STYLE = {
     "ytick.labelsize": 8,
 }
 
-# Gate drawing colours
-_GATE_EDGE_COLOR = "#000000"  # Black
-_GATE_FILL_COLOR = "#000000"  # Black
+# Gate drawing colours (HIGH CONTRAST FOR DEBUGGING)
+_GATE_EDGE_COLOR = "#FF00FF"  # Vibrant Magenta
+_GATE_FILL_COLOR = "#FF00FF"
 _GATE_ALPHA = 0.05
 _GATE_EDGE_ALPHA = 1.0
 _GATE_LINEWIDTH = 1.2
@@ -157,6 +158,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._fig.set_facecolor(_PLOT_BG)
         super().__init__(self._fig)
 
+        logger.info(f"FlowCanvas.__init__: state={state}, parent={parent}")
         self._state = state
         self.setParent(parent)
         self.setSizePolicy(
@@ -212,12 +214,16 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._active_gates: list[Gate] = []
         self._gate_nodes: list[GateNode] = []      # for stat labels
         self._selected_gate_id: Optional[str] = None
+        
+        # Phase 5: Gate Drawing FSM
+        from .gate_drawing_fsm import GateDrawingFSM
+        self._fsm = GateDrawingFSM(self)
 
-        # ── Rendering constraints ─────────────────────────────────────
+        # ── Setup ──────────────────────────────────────────────────────
         self._render_quality: str = "optimized"  # "optimized" or "transparent"
         self._max_events: Optional[int] = 100_000  # Default subsampling limit
         self._quality_multiplier: float = 1.0     # Grid resolution scaler
-        self._use_cache: bool = True              # Use bitmap caching for fast redraws
+        self._use_cache: bool = False              # DISABLED FOR DEBUGGING
 
         # ── Gate editing ──────────────────────────────────────────────
         self._editing_gate_id: Optional[str] = None
@@ -268,9 +274,17 @@ class FlowCanvas(FigureCanvasQTAgg):
         if getattr(self, "_dirty", False):
             self.redraw()
 
+    def paintEvent(self, event) -> None:
+        if not hasattr(self, "_paint_count"): self._paint_count = 0
+        self._paint_count += 1
+        if self._paint_count <= 5:
+            logger.info(f"FlowCanvas.paintEvent {self._paint_count} for {self._x_param}/{self._y_param}")
+        super().paintEvent(event)
+
     def resizeEvent(self, event) -> None:
         """Keep the loading overlay centered over the canvas."""
         super().resizeEvent(event)
+        logger.info(f"FlowCanvas resized: {self.width()}x{self.height()}")
         if hasattr(self, "_loading_label"):
             lw, lh = 160, 36
             x = (self.width() - lw) // 2
@@ -435,11 +449,18 @@ class FlowCanvas(FigureCanvasQTAgg):
         if getattr(self, '_batch_update', False):
             return
 
-        if not self.isVisible():
-            self._dirty = True
+        # If the canvas is 0x0, defer the redraw until it has a size.
+        if self.width() <= 0 or self.height() <= 0:
+            logger.warning("Canvas redraw deferred: size is 0x0. Setting timer for retry.")
+            from PyQt6.QtCore import QTimer
+            QTimer.singleShot(200, self.redraw)
             return
 
+        # Removed isVisible guard to ensure rendering even if Qt state is delayed
         self._dirty = False
+        logger.info("Canvas redraw triggered: data_size=%s, x=%s, y=%s, size=(%d, %d)", 
+                     len(self._current_data) if self._current_data is not None else "None",
+                     self._x_param, self._y_param, self.width(), self.height())
         self._canvas_bitmap_cache = None  # Invalidate cached bitmap
         self._show_loading()
         try:
@@ -451,6 +472,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             # Always hide the overlay — even if the render crashed.
             self._hide_loading()
         self._render_gate_layer()
+        self.draw() # Forced immediate draw instead of idle
 
     def _show_loading(self) -> None:
         """Show the loading overlay, keeping it on top."""
@@ -474,21 +496,17 @@ class FlowCanvas(FigureCanvasQTAgg):
 
     def _render_data_layer(self) -> None:
         """Render the expensive scatter/histogram data.
-
+        
         After this runs, we snapshot the axes bitmap so that gate
         overlays can be drawn on top without re-rendering data.
         """
+        logger.info(f"FlowCanvas._render_data_layer START: mode={self._display_mode}")
         self._ax.clear()
-        # ax.clear() resets facecolor to rcParams default, but re-apply
-        # explicitly so the white plot background is always consistent.
+        self._ax.set_axis_on()
         self._ax.set_facecolor(_PLOT_BG)
         self._gate_patches.clear()
         self._edit_handles.clear()
         self._gate_artists.clear()
-
-        if self._current_data is None or len(self._current_data) == 0:
-            self._show_empty()
-            return
 
         df = self._current_data
 
@@ -582,6 +600,12 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._ax.set_xlabel(self._x_label, fontsize=9, color=Colors.FG_SECONDARY)
         self._ax.set_ylabel(self._y_label, fontsize=9, color=Colors.FG_SECONDARY)
         self._apply_axis_formatting()
+        
+        # High-visibility axes for debugging
+        for spine in self._ax.spines.values():
+            spine.set_color('#00FFFF') # Cyan spines
+            spine.set_linewidth(2.0)
+        self._ax.tick_params(colors='#00FFFF', labelsize=10)
 
         # Event count annotation
         n = len(x_data)
@@ -597,13 +621,10 @@ class FlowCanvas(FigureCanvasQTAgg):
 
         self._ax.grid(True, color="#B0B0B0", alpha=0.35, linewidth=0.5)
         self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
+        
+        # Snapshot the background
         self.draw()  # flush to Qt so we can snapshot
-
-        # Cache the bitmap of the data layer
-        try:
-            self._canvas_bitmap_cache = self._fig.canvas.copy_from_bbox(self._ax.bbox)
-        except Exception:
-            self._canvas_bitmap_cache = None
+        logger.info("FlowCanvas._render_data_layer COMPLETE")
 
     def _apply_axis_formatting(self) -> None:
         """Apply biological decade formatting to axes if transformed.
@@ -729,6 +750,8 @@ class FlowCanvas(FigureCanvasQTAgg):
         from scipy.stats import rankdata
         from matplotlib import colormaps
         from fast_histogram import histogram2d as fast_hist2d
+        
+        logger.info(f"Rendering pseudocolor for {len(x)} points")
     
         valid = np.isfinite(x) & np.isfinite(y)
         x_vis, y_vis = x[valid], y[valid]
@@ -809,7 +832,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             alpha=0.8,
             edgecolors='none',
             linewidths=0,
-            rasterized=True,
+            rasterized=False,
         )
     
         self._ax.set_xlim(x_lo, x_hi)
@@ -971,6 +994,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         lightweight cleanup by _render_gate_layer().
         """
         self._gate_patches.clear()
+        self._gate_overlay_artists.clear()
 
         recorded_geometries = set()
         for i, gate in enumerate(self._active_gates):
@@ -1000,163 +1024,23 @@ class FlowCanvas(FigureCanvasQTAgg):
 
             # We have sharing_nodes populated above
 
-            patch = None
+            # Use the new GateOverlayRenderer service (OCP-compliant)
+            artists = self._gate_overlay_renderer.render_gate(self._ax, gate, is_selected)
 
-            if isinstance(gate, RectangleGate):
-                x_min = self._coordinate_mapper.transform_x(np.array([gate.x_min]))[0] if np.isfinite(gate.x_min) else self._ax.get_xlim()[0]
-                x_max = self._coordinate_mapper.transform_x(np.array([gate.x_max]))[0] if np.isfinite(gate.x_max) else self._ax.get_xlim()[1]
-                y_min = self._coordinate_mapper.transform_y(np.array([gate.y_min]))[0] if np.isfinite(gate.y_min) else self._ax.get_ylim()[0]
-                y_max = self._coordinate_mapper.transform_y(np.array([gate.y_max]))[0] if np.isfinite(gate.y_max) else self._ax.get_ylim()[1]
-
-                patch = MplRectangle(
-                    (x_min, y_min),
-                    x_max - x_min,
-                    y_max - y_min,
-                    linewidth=lw,
-                    edgecolor=edge_color,
-                    facecolor=color,
-                    alpha=fill_alpha,
-                    linestyle=ls,
-                    zorder=10,
-                )
-                self._ax.add_patch(patch)
-                self._gate_artists.append(patch)
-                self._draw_node_labels(sharing_nodes, (x_min + (x_max - x_min)*0.02, y_max - (y_max - y_min)*0.05), is_selected, va="top")
-
-            elif isinstance(gate, PolygonGate):
-                if len(gate.vertices) >= 3:
-                    tx = self._coordinate_mapper.transform_x(np.array([v[0] for v in gate.vertices]))
-                    ty = self._coordinate_mapper.transform_y(np.array([v[1] for v in gate.vertices]))
-                    transformed_vertices = list(zip(tx, ty))
-                    patch = MplPolygon(
-                        transformed_vertices,
-                        closed=True,
-                        linewidth=lw,
-                        edgecolor=edge_color,
-                        facecolor=color,
-                        alpha=fill_alpha,
-                        linestyle="--" if not is_selected else "-",
-                        zorder=10,
-                    )
-                    self._ax.add_patch(patch)
-                    self._gate_artists.append(patch)
-                    self._draw_node_labels(sharing_nodes, (np.mean(tx), np.mean(ty)), is_selected, ha="center", va="center")
-
-            elif isinstance(gate, EllipseGate):
-                # Sample the ellipse and transform the points to render properly in non-linear spaces
-                theta = np.linspace(0, 2*np.pi, 64)
-                cos_a, sin_a = np.cos(np.radians(gate.angle)), np.sin(np.radians(gate.angle))
-                x_edge = gate.center[0] + gate.width * np.cos(theta) * cos_a - gate.height * np.sin(theta) * sin_a
-                y_edge = gate.center[1] + gate.width * np.cos(theta) * sin_a + gate.height * np.sin(theta) * cos_a
-                
-                tx_edge = self._coordinate_mapper.transform_x(x_edge)
-                ty_edge = self._coordinate_mapper.transform_y(y_edge)
-                transformed_vertices = list(zip(tx_edge, ty_edge))
-
-                patch = MplPolygon(
-                    transformed_vertices,
-                    closed=True,
-                    linewidth=lw,
-                    edgecolor=edge_color,
-                    facecolor=color,
-                    alpha=fill_alpha,
-                    linestyle=ls,
-                    zorder=10,
-                )
-                self._ax.add_patch(patch)
-                self._gate_artists.append(patch)
-
-                cx = self._coordinate_mapper.transform_x(np.array([gate.center[0]]))[0]
-                cy = self._coordinate_mapper.transform_y(np.array([gate.center[1]]))[0]
-                self._draw_node_labels(sharing_nodes, (cx, cy), is_selected, ha="center", va="center")
-
-            elif isinstance(gate, QuadrantGate):
-                x_mid = self._coordinate_mapper.transform_x(np.array([gate.x_mid]))[0]
-                y_mid = self._coordinate_mapper.transform_y(np.array([gate.y_mid]))[0]
-                xlim = self._ax.get_xlim()
-                ylim = self._ax.get_ylim()
-
-                # Draw crosshair lines
-                vl = self._ax.axvline(
-                    x_mid, color=edge_color,
-                    linewidth=lw, linestyle="--",
-                    alpha=0.7, zorder=10,
-                )
-                self._gate_artists.append(vl)
-                hl = self._ax.axhline(
-                    y_mid, color=edge_color,
-                    linewidth=lw, linestyle="--",
-                    alpha=0.7, zorder=10,
-                )
-                self._gate_artists.append(hl)
-
-                # Quadrant labels
-                q_nodes = sharing_nodes[0].children if sharing_nodes else []
-                if len(q_nodes) == 4:
-                    q_labels = [self._format_gate_label(None, n) for n in q_nodes]
-                else:
-                    q_labels = ["Q1 ++", "Q2 −+", "Q3 −−", "Q4 +−"]
-
-                q_positions = [
-                    (x_mid + (xlim[1] - x_mid) * 0.5, y_mid + (ylim[1] - y_mid) * 0.5),
-                    (xlim[0] + (x_mid - xlim[0]) * 0.5, y_mid + (ylim[1] - y_mid) * 0.5),
-                    (xlim[0] + (x_mid - xlim[0]) * 0.5, ylim[0] + (y_mid - ylim[0]) * 0.5),
-                    (x_mid + (xlim[1] - x_mid) * 0.5, ylim[0] + (y_mid - ylim[0]) * 0.5),
-                ]
-                for ql, (qx, qy) in zip(q_labels, q_positions):
-                    txt = self._ax.annotate(
-                        ql,
-                        xy=(qx, qy),
-                        fontsize=10, 
-                        color="#000000",
-                        fontweight="bold",
-                        ha="center", va="center",
-                        zorder=12,
-                        bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFFFFFCC", edgecolor="#CCCCCC", linewidth=0.5)
-                    )
-                    self._gate_artists.append(txt)
-
-            elif isinstance(gate, RangeGate):
-                low = self._coordinate_mapper.transform_x(np.array([gate.low]))[0] if np.isfinite(gate.low) else self._ax.get_xlim()[0]
-                high = self._coordinate_mapper.transform_x(np.array([gate.high]))[0] if np.isfinite(gate.high) else self._ax.get_xlim()[1]
-                ylim = self._ax.get_ylim()
-
-                patch = MplRectangle(
-                    (low, ylim[0]),
-                    high - low,
-                    ylim[1] - ylim[0],
-                    linewidth=lw,
-                    edgecolor=edge_color,
-                    facecolor=color,
-                    alpha=fill_alpha * 0.6,
-                    zorder=10,
-                )
-                self._ax.add_patch(patch)
-                self._gate_artists.append(patch)
-
-                # Boundary lines
-                vl1 = self._ax.axvline(
-                    low, color=edge_color, linewidth=lw,
-                    linestyle="--", alpha=0.7, zorder=11,
-                )
-                self._gate_artists.append(vl1)
-                vl2 = self._ax.axvline(
-                    high, color=edge_color, linewidth=lw,
-                    linestyle="--", alpha=0.7, zorder=11,
-                )
-                self._gate_artists.append(vl2)
-
-                cx = low + (high - low) * 0.5
-                cy = ylim[1] * 0.95
-                self._draw_node_labels(sharing_nodes, (cx, cy), is_selected, ha="center", va="top")
-
-            # Store patch reference for hit-testing
-            if patch is not None:
+            # Store artists for hit-testing and cleanup
+            if artists:
                 self._gate_overlay_artists[gate.gate_id] = {
-                    "patch": patch,
+                    "patch": artists.patch,
                     "gate": gate,
-                    "color": color,
+                    "artists": artists,
                 }
+                if artists.patch:
+                    self._gate_artists.append(artists.patch)
+                if artists.label_text:
+                    self._gate_artists.append(artists.label_text)
+                if artists.handles:
+                    for h in artists.handles.values():
+                        self._gate_artists.append(h)
 
     def _draw_node_labels(
         self, 
@@ -1235,170 +1119,82 @@ class FlowCanvas(FigureCanvasQTAgg):
 
     def _on_press(self, event) -> None:
         """Handle mouse press — start drawing or select gate."""
-        if event.inaxes != self._ax:
+        if event.inaxes != self._ax or event.dblclick:
+            logger.warning(f"FlowCanvas._on_press: Click ignored (inaxes={event.inaxes}, dblclick={event.dblclick})")
             return
-        if event.dblclick:
-            return  # handled by _on_dblclick
-
-        x, y = event.xdata, event.ydata
-
-        # ── NONE mode: select existing gate ───────────────────────────
-        if self._drawing_mode == GateDrawingMode.NONE:
-            self._try_select_gate(x, y)
-            return
-
-        # ── POLYGON mode: add vertex on each click ────────────────────
-        if self._drawing_mode == GateDrawingMode.POLYGON:
-            self._polygon_vertices.append((x, y))
-            self._draw_polygon_progress()
-            return
-
-        # ── QUADRANT mode: single click to place crosshair ────────────
-        if self._drawing_mode == GateDrawingMode.QUADRANT:
-            self._finalize_quadrant(x, y)
-            return
-
-        # ── RECTANGLE / ELLIPSE / RANGE: start drag ───────────────────
-        self._drag_start = (x, y)
-        self._is_drawing = True
+        
+        logger.info(f"FlowCanvas._on_press: x={event.xdata:.2f}, y={event.ydata:.2f}, mode={self._drawing_mode.value}")
+        self._fsm.handle_press(event.xdata, event.ydata, self._drawing_mode.value)
 
     def _on_motion(self, event) -> None:
         """Handle mouse movement — rubber-band preview during drawing."""
         if event.inaxes != self._ax:
             return
-
-        if not self._is_drawing or self._drag_start is None:
-            return
-
-        x0, y0 = self._drag_start
-        x1, y1 = event.xdata, event.ydata
-
-        # Remove previous rubber band
-        self._clear_rubber_band()
-
-        if self._drawing_mode == GateDrawingMode.RECTANGLE:
-            self._rubber_band_patch = MplRectangle(
-                (min(x0, x1), min(y0, y1)),
-                abs(x1 - x0), abs(y1 - y0),
-                linewidth=1.5,
-                edgecolor=_RUBBER_BAND_COLOR,
-                facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.2,
-                linestyle=":",
-                zorder=20,
-            )
-            self._ax.add_patch(self._rubber_band_patch)
-
-        elif self._drawing_mode == GateDrawingMode.ELLIPSE:
-            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-            w, h = abs(x1 - x0), abs(y1 - y0)
-            self._rubber_band_patch = MplEllipse(
-                (cx, cy), w, h,
-                linewidth=1.5,
-                edgecolor=_RUBBER_BAND_COLOR,
-                facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.2,
-                linestyle=":",
-                zorder=20,
-            )
-            self._ax.add_patch(self._rubber_band_patch)
-
-        elif self._drawing_mode == GateDrawingMode.RANGE:
-            ylim = self._ax.get_ylim()
-            self._rubber_band_patch = MplRectangle(
-                (min(x0, x1), ylim[0]),
-                abs(x1 - x0), ylim[1] - ylim[0],
-                linewidth=1.5,
-                edgecolor=_RUBBER_BAND_COLOR,
-                facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.2,
-                linestyle=":",
-                zorder=20,
-            )
-            self._ax.add_patch(self._rubber_band_patch)
-
-        # Publish preview event for Group Preview
-        if self._state and self._state.event_bus:
-            # Create a temporary gate object for preview
-            temp_gate = None
-            if self._drawing_mode == GateDrawingMode.RECTANGLE:
-                temp_gate = self._gate_factory.create_rectangle(x0, y0, x1, y1)
-            elif self._drawing_mode == GateDrawingMode.ELLIPSE:
-                temp_gate = self._gate_factory.create_ellipse(x0, y0, x1, y1)
-            elif self._drawing_mode == GateDrawingMode.RANGE:
-                temp_gate = self._gate_factory.create_range(x0, x1)
-            
-            if temp_gate:
-                from ...analysis.event_bus import Event, EventType
-                self._state.event_bus.publish(Event(
-                    EventType.GATE_PREVIEW,
-                    data={"gate": temp_gate, "sample_id": getattr(self, '_sample_id', None)},
-                    source="flow_canvas"
-                ))
-
-        self.draw_idle()
+        try:
+            # logger.info(f"Canvas _on_motion: x={event.xdata}, y={event.ydata}")
+            self._fsm.handle_motion(event.xdata, event.ydata, self._drawing_mode.value)
+        except Exception as e:
+            logger.error(f"Error in motion handler: {e}", exc_info=True)
 
     def _on_release(self, event) -> None:
         """Handle mouse release — finalize gate drawing."""
         if event.inaxes != self._ax:
-            self._cancel_drawing()
+            self._fsm.cancel()
             return
-
-        if not self._is_drawing or self._drag_start is None:
-            return
-
-        x0, y0 = self._drag_start
-        x1, y1 = event.xdata, event.ydata
-        self._is_drawing = False
-        self._drag_start = None
-        self._clear_rubber_band()
-
-        # Skip if the drag was too small (accidental click)
-        drag_dist = max(abs(x1 - x0), abs(y1 - y0))
-        xlim = self._ax.get_xlim()
-        ylim = self._ax.get_ylim()
-        threshold = min(xlim[1] - xlim[0], ylim[1] - ylim[0]) * 0.005
-        if drag_dist < threshold:
-            self._clear_previews()
-            return
-
-        if self._drawing_mode == GateDrawingMode.RECTANGLE:
-            self._finalize_rectangle(x0, y0, x1, y1)
-        elif self._drawing_mode == GateDrawingMode.ELLIPSE:
-            self._finalize_ellipse(x0, y0, x1, y1)
-        elif self._drawing_mode == GateDrawingMode.RANGE:
-            self._finalize_range(x0, x1)
-        
-        self._clear_previews()
+        self._fsm.handle_release(event.xdata, event.ydata, self._drawing_mode.value)
 
     def _on_dblclick(self, event) -> None:
         """Handle double-click — close polygon."""
         if not event.dblclick or event.inaxes != self._ax:
             return
+        self._fsm.handle_dblclick(event.xdata, event.ydata, self._drawing_mode.value)
 
-        if (self._drawing_mode == GateDrawingMode.POLYGON
-                and len(self._polygon_vertices) >= 3):
-            # Remove the extra vertex added by the dblclick press event
-            if len(self._polygon_vertices) > 3:
-                self._polygon_vertices.pop()
-            self._finalize_polygon()
-            self._clear_previews()
+    def _draw_rubber_band(self, x0: float, y0: float, x1: float, y1: float, mode: str) -> None:
+        """Draw rubber-band preview for drag-based gates."""
+        self._clear_rubber_band()
+        
+        if mode == "rectangle":
+            self._rubber_band_patch = MplRectangle(
+                (min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0),
+                linewidth=1.5, edgecolor=_RUBBER_BAND_COLOR, facecolor=_RUBBER_BAND_COLOR,
+                alpha=0.2, linestyle=":", zorder=20
+            )
+        elif mode == "ellipse":
+            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
+            w, h = abs(x1 - x0), abs(y1 - y0)
+            self._rubber_band_patch = MplEllipse(
+                (cx, cy), w, h,
+                linewidth=1.5, edgecolor=_RUBBER_BAND_COLOR, facecolor=_RUBBER_BAND_COLOR,
+                alpha=0.2, linestyle=":", zorder=20
+            )
+        elif mode == "range":
+            ylim = self._ax.get_ylim()
+            self._rubber_band_patch = MplRectangle(
+                (min(x0, x1), ylim[0]), abs(x1 - x0), ylim[1] - ylim[0],
+                linewidth=1.5, edgecolor=_RUBBER_BAND_COLOR, facecolor=_RUBBER_BAND_COLOR,
+                alpha=0.2, linestyle=":", zorder=20
+            )
+            
+        if self._rubber_band_patch:
+            self._ax.add_patch(self._rubber_band_patch)
+            self.draw_idle()
 
-    # ── Gate finalization ─────────────────────────────────────────────
+    def _finalize_drag_gate(self, x0: float, y0: float, x1: float, y1: float, mode: str) -> None:
+        """Finalize a gate drawn by dragging."""
+        if mode == "rectangle":
+            self._finalize_rectangle(x0, y0, x1, y1)
+        elif mode == "ellipse":
+            self._finalize_ellipse(x0, y0, x1, y1)
+        elif mode == "range":
+            self._finalize_range(x0, x1)
+        self._clear_previews()
 
-    def _finalize_rectangle(
-        self, x0: float, y0: float, x1: float, y1: float
-    ) -> None:
-        """Create a RectangleGate from the drawn rectangle."""
-        gate = self._gate_factory.create_rectangle(x0, y0, x1, y1)
-        self.gate_created.emit(gate)
-
-    def _finalize_polygon(self) -> None:
+    def _finalize_polygon(self, vertices: List[Tuple[float, float]]) -> None:
         """Create a PolygonGate from the accumulated vertices."""
-        gate = self._gate_factory.create_polygon(self._polygon_vertices)
-        self._polygon_vertices.clear()
-        self._clear_polygon_progress()
+        gate = self._gate_factory.create_polygon(vertices)
         self.gate_created.emit(gate)
+        self._clear_polygon_progress()
+        self._clear_previews()
 
     def _finalize_ellipse(
         self, x0: float, y0: float, x1: float, y1: float
@@ -1447,8 +1243,13 @@ class FlowCanvas(FigureCanvasQTAgg):
                 pass
             self._rubber_band_patch = None
 
-    def _draw_polygon_progress(self) -> None:
+    def _draw_polygon_progress(self, *args, **kwargs) -> None:
         """Draw vertices, connecting lines, and closing preview for polygon."""
+        logger.debug(f"FlowCanvas._draw_polygon_progress: vertices={len(self._polygon_vertices)}")
+        current_mouse = kwargs.get('current_mouse')
+        if not current_mouse and args:
+            current_mouse = args[0]
+
         self._clear_polygon_progress()
 
         if len(self._polygon_vertices) < 1:
@@ -1457,15 +1258,32 @@ class FlowCanvas(FigureCanvasQTAgg):
         xs = [v[0] for v in self._polygon_vertices]
         ys = [v[1] for v in self._polygon_vertices]
 
-        # Vertex markers
+        # ── Live preview line ──────────────────────────────────────────
+        # From the last placed vertex to the current mouse position
+        if current_mouse is not None and len(self._polygon_vertices) >= 1:
+            x_m, y_m = current_mouse
+            x_last, y_last = self._polygon_vertices[-1]
+            preview_line, = self._ax.plot(
+                [x_last, x_m], [y_last, y_m], ":",
+                color=_GATE_EDGE_COLOR,
+                linewidth=1.0,
+                alpha=0.6,
+                zorder=5000,
+            )
+            self._polygon_marker_lines.append(preview_line)
+
+        # Vertex markers (HIGH VISIBILITY)
         line, = self._ax.plot(
-            xs, ys, "o",
+            xs, ys, "x-",  # X markers and solid lines
             color=_GATE_EDGE_COLOR,
-            markersize=6,
-            alpha=0.9,
-            zorder=20,
+            markersize=12,
+            linewidth=2.5,
+            alpha=1.0,
+            zorder=9999,
+            label="DEBUG_GATE_PROGRESS"
         )
         self._polygon_marker_lines.append(line)
+        logger.info(f"FlowCanvas._draw_polygon_progress: Added {len(xs)} markers to AX, zorder=9999")
 
         # Connecting lines
         if len(self._polygon_vertices) >= 2:
@@ -1474,7 +1292,7 @@ class FlowCanvas(FigureCanvasQTAgg):
                 color=_GATE_EDGE_COLOR,
                 linewidth=1.5,
                 alpha=0.7,
-                zorder=20,
+                zorder=5000,
             )
             self._polygon_marker_lines.append(line2)
 
@@ -1484,7 +1302,7 @@ class FlowCanvas(FigureCanvasQTAgg):
                 color=_GATE_EDGE_COLOR,
                 linewidth=1.0,
                 alpha=0.5,
-                zorder=20,
+                zorder=5000,
             )
             self._polygon_marker_lines.append(close_line)
 
@@ -1506,8 +1324,6 @@ class FlowCanvas(FigureCanvasQTAgg):
                 source="flow_canvas"
             ))
 
-        self.draw_idle()
-
         # Update instruction with vertex count
         n_pts = len(self._polygon_vertices)
         hint = f"{n_pts} point{'s' if n_pts != 1 else ''} — double-click to close"
@@ -1515,7 +1331,8 @@ class FlowCanvas(FigureCanvasQTAgg):
             hint = f"{n_pts} point{'s' if n_pts != 1 else ''} — need at least 3"
         self._update_instruction(hint)
 
-        self.draw_idle()
+        self.draw() # Force immediate update for interactive feedback
+        self.draw_idle() # Ensure internal buffers are clean
 
     def _clear_polygon_progress(self) -> None:
         """Remove polygon progress markers."""
@@ -1609,6 +1426,7 @@ class FlowCanvas(FigureCanvasQTAgg):
 
     def _show_empty(self) -> None:
         """Display an empty-state message."""
+        logger.info("FlowCanvas._show_empty called (triggering empty state)")
         self._ax.clear()
         self._ax.set_facecolor(_PLOT_BG)
         self._ax.text(
@@ -1627,6 +1445,7 @@ class FlowCanvas(FigureCanvasQTAgg):
 
     def _show_error(self, msg: str) -> None:
         """Display an error message on the canvas."""
+        logger.error(f"FlowCanvas._show_error: {msg}")
         self._ax.clear()
         self._ax.set_facecolor(_PLOT_BG)
         self._ax.text(

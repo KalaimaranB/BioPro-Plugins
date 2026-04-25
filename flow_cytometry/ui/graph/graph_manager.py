@@ -211,9 +211,15 @@ class GraphManager(QWidget):
         idx = self._tabs.addTab(graph, "")
         self._update_tab_label(idx)
         self._tabs.setCurrentIndex(idx)
+        
+        # Explicitly ensure visibility and layout
+        graph.show()
+        graph.updateGeometry()
+        self._tabs.updateGeometry()
+        self._tabs.show()
 
         self._update_visibility()
-        logger.info("Opened graph for %s (population=%s)", sample.display_name, node_id)
+        logger.info(f"Opened graph for {sample.display_name} (population={node_id}), tab_count={self._tabs.count()}")
 
     def _update_tab_label(self, index: int) -> None:
         """Regenerate the tab title for a specific index."""
@@ -422,3 +428,6 @@ class GraphManager(QWidget):
         has_graphs = self._tabs.count() > 0
         self._tabs.setVisible(has_graphs)
         self._welcome.setVisible(not has_graphs)
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        logger.info(f"GraphManager resized: {self.width()}x{self.height()}, tabs_visible={self._tabs.isVisible()}, welcome_visible={self._welcome.isVisible()}")
