@@ -80,7 +80,7 @@ def biexponential_transform(
     data: np.ndarray,
     *,
     top: float = 262144.0,
-    width: float = 0.5,
+    width: float = 1.0,
     positive: float = 4.5,
     negative: float = 0.0,
 ) -> np.ndarray:
@@ -134,13 +134,16 @@ def biexponential_transform(
     except ImportError:
         pass
 
-    # ── Attempt 3: asinh fallback (last resort) ──────────────────────
+    # ── Attempt 3: asinh fallback (parameterized) ────────────────────
     logger.warning(
-        "Neither flowkit nor flowutils available — using asinh fallback. "
+        f"Neither flowkit nor flowutils available — using parameterized asinh fallback (W={width}, M={positive}). "
         "Install flowkit for the real Logicle transform."
     )
-    cofactor = 150.0
-    return np.arcsinh(data_jitter / cofactor)
+    # Parameterized asinh to respond to W and M
+    # W controls the linear width, M controls the positive decades
+    # Roughly: cofactor = T / 10^M * 10^W
+    cofactor = (top / (10**positive)) * (10**width)
+    return np.arcsinh(data_jitter / cofactor) / positive
 
 
 def apply_transform(
@@ -198,7 +201,7 @@ def invert_biexponential_transform(
     data: np.ndarray,
     *,
     top: float = 262144.0,
-    width: float = 0.5,
+    width: float = 1.0,
     positive: float = 4.5,
     negative: float = 0.0,
 ) -> np.ndarray:
@@ -240,9 +243,9 @@ def invert_biexponential_transform(
     except ImportError:
         pass
 
-    # ── Attempt 3: asinh fallback (last resort) ──────────────────────
-    cofactor = 150.0
-    return np.sinh(data) * cofactor
+    # ── Attempt 3: asinh fallback (parameterized) ────────────────────
+    cofactor = (top / (10**positive)) * (10**width)
+    return np.sinh(data * positive) * cofactor
 
 
 def invert_transform(

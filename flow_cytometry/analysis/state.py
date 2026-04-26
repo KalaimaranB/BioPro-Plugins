@@ -144,18 +144,11 @@ class FlowState(PluginState):
                 "active_transform_x": self.active_transform_x,
                 "active_transform_y": self.active_transform_y,
                 "active_plot_type": self.active_plot_type,
+                "render_quality": self.render_quality,
+                "auto_range_on_quality": self.auto_range_on_quality,
             },
             "channel_scales": {
-                ch: {
-                    "transform_type": sc.transform_type.value,
-                    "min_val": sc.min_val,
-                    "max_val": sc.max_val,
-                    "logicle_t": sc.logicle_t,
-                    "logicle_w": sc.logicle_w,
-                    "logicle_m": sc.logicle_m,
-                    "logicle_a": sc.logicle_a,
-                }
-                for ch, sc in self.channel_scales.items()
+                ch: sc.to_dict() for ch, sc in self.channel_scales.items()
             }
         }
 
@@ -188,6 +181,8 @@ class FlowState(PluginState):
         self.active_transform_x = view.get("active_transform_x", "linear")
         self.active_transform_y = view.get("active_transform_y", "linear")
         self.active_plot_type = view.get("active_plot_type", "pseudocolor")
+        self.render_quality = view.get("render_quality", "optimized")
+        self.auto_range_on_quality = view.get("auto_range_on_quality", True)
 
         # Experiment reconstruction: reload FCS files from saved paths
         exp_data = data.get("experiment", {})
@@ -202,17 +197,8 @@ class FlowState(PluginState):
 
         # Scale parameters
         scales_data = data.get("channel_scales", {})
-        from .transforms import TransformType
-        for ch, sc in scales_data.items():
-            self.channel_scales[ch] = AxisScale(
-                transform_type=TransformType(sc.get("transform_type", "linear")),
-                min_val=sc.get("min_val"),
-                max_val=sc.get("max_val"),
-                logicle_t=sc.get("logicle_t", 262144.0),
-                logicle_w=sc.get("logicle_w", 0.5),
-                logicle_m=sc.get("logicle_m", 4.5),
-                logicle_a=sc.get("logicle_a", 0.0),
-            )
+        for ch, sc_data in scales_data.items():
+            self.channel_scales[ch] = AxisScale.from_dict(sc_data)
 
         logger.info("FlowState restoration complete.")
 
@@ -239,6 +225,16 @@ class FlowState(PluginState):
 
             try:
                 fcs_data = load_fcs(path)
+                
+                # Re-apply compensation if it was active when saved
+                if sample.is_compensated and self.compensation:
+                    # Check if it was already compensated by the loader (embedded SPILL)
+                    if not fcs_data.is_compensated:
+                        from .compensation import apply_compensation
+                        fcs_data.events = apply_compensation(fcs_data, self.compensation)
+                        fcs_data.is_compensated = True
+                        logger.info(f"Re-applied BioPro compensation matrix to reloaded sample '{sample.display_name}'")
+                
                 sample.fcs_data = fcs_data
                 logger.info(
                     "Reloaded FCS data for '%s': %d events",

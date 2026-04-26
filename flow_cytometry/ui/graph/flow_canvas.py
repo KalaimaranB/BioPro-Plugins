@@ -87,19 +87,19 @@ class GateDrawingMode(Enum):
 # ── Visual constants ─────────────────────────────────────────────────────────
 
 # Plot area uses a pure white background inside the axes
-# so the dark purple "turbo" outlier dots are perfectly visible.
-_PLOT_BG = "#1A1A2E"
+# so all populations and density hexbins are perfectly visible.
+_PLOT_BG = "#FFFFFF"
 
 _MPL_STYLE = {
-    "figure.facecolor": Colors.BG_DARKEST,
+    "figure.facecolor": "#FFFFFF",
     "axes.facecolor": _PLOT_BG,
-    "axes.edgecolor": "#FFFFFF",
-    "axes.labelcolor": "#FFFFFF",
-    "xtick.color": "#FFFFFF",
-    "ytick.color": "#FFFFFF",
-    "text.color": "#FFFFFF",
-    "grid.color": "#B0B0B0",  # Darker grey for visibility on white background
-    "grid.alpha": 0.35,
+    "axes.edgecolor": "#333333",
+    "axes.labelcolor": "#333333",
+    "xtick.color": "#333333",
+    "ytick.color": "#333333",
+    "text.color": "#333333",
+    "grid.color": "#E0E0E0",  # Light grey for visibility on white background
+    "grid.alpha": 0.5,
     "font.size": 9,
     "axes.titlesize": 10,
     "axes.labelsize": 9,
@@ -107,9 +107,9 @@ _MPL_STYLE = {
     "ytick.labelsize": 8,
 }
 
-# Gate drawing colours (HIGH CONTRAST FOR DEBUGGING)
-_GATE_EDGE_COLOR = "#FF00FF"  # Vibrant Magenta
-_GATE_FILL_COLOR = "#FF00FF"
+# Gate drawing colours (Clean & Professional)
+_GATE_EDGE_COLOR = "#000000"  # Black
+_GATE_FILL_COLOR = "#000000"
 _GATE_ALPHA = 0.05
 _GATE_EDGE_ALPHA = 1.0
 _GATE_LINEWIDTH = 1.2
@@ -118,13 +118,13 @@ _GATE_SELECTED_ALPHA = 0.10
 _RUBBER_BAND_COLOR = "#333333"
 _RUBBER_BAND_ALPHA = 0.4
 
-# Different shades of dark for multi-gate plots
+# Vibrant palette for multi-gate plots on white background
 _GATE_PALETTE = [
-    "#000000",   # Black
-    "#333333",   # Dark gray
-    "#555555",   # Medium gray
-    "#222222",   # Near black
-    "#444444",   # Charcoal
+    "#FF0000",   # Red
+    "#0000FF",   # Blue
+    "#008000",   # Green
+    "#FF8C00",   # Dark Orange
+    "#8B008B",   # Dark Magenta
 ]
 
 
@@ -157,6 +157,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._fig = Figure(figsize=(6, 5), dpi=100)
         self._fig.set_facecolor(_PLOT_BG)
         super().__init__(self._fig)
+        self.setStyleSheet(f"background-color: {_PLOT_BG};")
 
         logger.info(f"FlowCanvas.__init__: state={state}, parent={parent}")
         self._state = state
@@ -292,6 +293,10 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._loading_label.setGeometry(x, y, lw, lh)
 
     # ── coordinate mapping ────────────────────────────────────────────
+
+    def set_sample_id(self, sample_id: str) -> None:
+        """Set the sample ID for event publication context."""
+        self._sample_id = sample_id
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -597,15 +602,15 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._draw_density(x_data, y_data)
 
         # Labels
-        self._ax.set_xlabel(self._x_label, fontsize=9, color=Colors.FG_SECONDARY)
-        self._ax.set_ylabel(self._y_label, fontsize=9, color=Colors.FG_SECONDARY)
+        self._ax.set_xlabel(self._x_label, fontsize=9, color="#333333")
+        self._ax.set_ylabel(self._y_label, fontsize=9, color="#333333")
         self._apply_axis_formatting()
         
-        # High-visibility axes for debugging
+        # Standard professional axes styling
         for spine in self._ax.spines.values():
-            spine.set_color('#00FFFF') # Cyan spines
-            spine.set_linewidth(2.0)
-        self._ax.tick_params(colors='#00FFFF', labelsize=10)
+            spine.set_color('#333333')
+            spine.set_linewidth(1.0)
+        self._ax.tick_params(colors='#333333', labelsize=8)
 
         # Event count annotation
         n = len(x_data)
@@ -615,7 +620,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             xycoords="axes fraction",
             ha="right", va="top",
             fontsize=8,
-            color=Colors.FG_DISABLED,
+            color="#333333",
             alpha=0.8,
         )
 
@@ -943,8 +948,8 @@ class FlowCanvas(FigureCanvasQTAgg):
         # Apply padding to top of histogram
         if len(counts) > 0:
             self._ax.set_ylim(0, counts.max() * 1.1)
-        self._ax.set_xlabel(self._x_label, fontsize=9, color=Colors.FG_SECONDARY)
-        self._ax.set_ylabel("Density", fontsize=9, color=Colors.FG_SECONDARY)
+        self._ax.set_xlabel(self._x_label, fontsize=9, color="#333333")
+        self._ax.set_ylabel("Density", fontsize=9, color="#333333")
 
         n = len(x_data)
         self._ax.annotate(
@@ -953,7 +958,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             xycoords="axes fraction",
             ha="right", va="top",
             fontsize=8,
-            color=Colors.FG_DISABLED,
+            color="#333333",
         )
         self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
         self.draw()
@@ -980,8 +985,8 @@ class FlowCanvas(FigureCanvasQTAgg):
             color=Colors.ACCENT_PRIMARY,
             linewidth=1.5,
         )
-        self._ax.set_xlabel(self._x_label, fontsize=9, color=Colors.FG_SECONDARY)
-        self._ax.set_ylabel("CDF", fontsize=9, color=Colors.FG_SECONDARY)
+        self._ax.set_xlabel(self._x_label, fontsize=9, color="#333333")
+        self._ax.set_ylabel("CDF", fontsize=9, color="#333333")
         self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
         self.draw()
 
@@ -1025,7 +1030,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             # We have sharing_nodes populated above
 
             # Use the new GateOverlayRenderer service (OCP-compliant)
-            artists = self._gate_overlay_renderer.render_gate(self._ax, gate, is_selected)
+            artists = self._gate_overlay_renderer.render_gate(self._ax, gate, is_selected, edge_color)
 
             # Store artists for hit-testing and cleanup
             if artists:
@@ -1272,36 +1277,25 @@ class FlowCanvas(FigureCanvasQTAgg):
             )
             self._polygon_marker_lines.append(preview_line)
 
-        # Vertex markers (HIGH VISIBILITY)
+        # Vertex markers & connecting lines (Clean, professional look)
         line, = self._ax.plot(
-            xs, ys, "x-",  # X markers and solid lines
+            xs, ys, "o-",  # Circle markers and solid lines
             color=_GATE_EDGE_COLOR,
-            markersize=12,
-            linewidth=2.5,
-            alpha=1.0,
+            markersize=4,
+            linewidth=1.0,
+            alpha=0.8,
             zorder=9999,
-            label="DEBUG_GATE_PROGRESS"
         )
         self._polygon_marker_lines.append(line)
-        logger.info(f"FlowCanvas._draw_polygon_progress: Added {len(xs)} markers to AX, zorder=9999")
 
-        # Connecting lines
-        if len(self._polygon_vertices) >= 2:
-            line2, = self._ax.plot(
-                xs, ys, "-",
-                color=_GATE_EDGE_COLOR,
-                linewidth=1.5,
-                alpha=0.7,
-                zorder=5000,
-            )
-            self._polygon_marker_lines.append(line2)
-
-            # Closing preview line (last vertex → first vertex, dashed)
+        # ── Closing preview line ──────────────────────────────────────
+        # Last vertex → first vertex (dashed)
+        if len(self._polygon_vertices) >= 3:
             close_line, = self._ax.plot(
                 [xs[-1], xs[0]], [ys[-1], ys[0]], "--",
                 color=_GATE_EDGE_COLOR,
-                linewidth=1.0,
-                alpha=0.5,
+                linewidth=0.8,
+                alpha=0.4,
                 zorder=5000,
             )
             self._polygon_marker_lines.append(close_line)
@@ -1435,7 +1429,7 @@ class FlowCanvas(FigureCanvasQTAgg):
             transform=self._ax.transAxes,
             ha="center", va="center",
             fontsize=12,
-            color=Colors.FG_DISABLED,
+            color="#333333",
             alpha=0.6,
         )
         self._ax.set_xticks([])

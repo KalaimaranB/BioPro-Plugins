@@ -99,10 +99,19 @@ class FlowCytometryPanel(PluginBase):
         )
         handler.setFormatter(formatter)
         
-        # Get the root logger for this plugin's package
-        plugin_logger = logging.getLogger("biopro.plugins.flow_cytometry")
+        # The package might be named 'flow_cytometry' or 'biopro.plugins.flow_cytometry'
+        pkg_name = __name__.split('.')[0]
+        # CAPTURE EVERYTHING in this package and subpackages
+        plugin_logger = logging.getLogger(pkg_name)
         plugin_logger.setLevel(logging.DEBUG)
         plugin_logger.addHandler(handler)
+        plugin_logger.propagate = True # Ensure it bubbles up if needed
+        
+        # Also capture the biopro.plugins prefix just in case it's loaded that way
+        logging.getLogger(f"biopro.plugins.{pkg_name}").addHandler(handler)
+        logging.getLogger(f"biopro.plugins.{pkg_name}").setLevel(logging.DEBUG)
+
+        logger.info(f"Plugin logging initialized for package '{pkg_name}' and 'biopro.plugins.{pkg_name}'. Writing to: {log_file}")
         
         # Ensure the handler is removed on shutdown to avoid leaks
         self._log_handler = handler

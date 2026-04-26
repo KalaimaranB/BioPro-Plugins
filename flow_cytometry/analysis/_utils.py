@@ -113,7 +113,7 @@ class BiexponentialParameters:
     # Defaults match Logicle spec and BiExponentialTransform expectations
     _DEFAULTS = {
         "top": 262144,        # Typical for 18-bit data
-        "width": 0.5,         # Standard linear region
+        "width": 1.0,         # Standard linear region (increased from 0.5)
         "positive": 4.5,      # Positive decades
         "negative": 0.0,      # Negative decades (typically off)
     }

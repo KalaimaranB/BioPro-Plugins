@@ -66,6 +66,10 @@ class Gate(ABC):
         self.adaptive = adaptive
 
     @abstractmethod
+    def copy(self) -> Gate:
+        """Create a deep copy of this gate."""
+
+    @abstractmethod
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Test which events fall inside this gate.
 
@@ -204,6 +208,16 @@ class RectangleGate(Gate):
 
         return mask
 
+    def copy(self) -> RectangleGate:
+        return RectangleGate(
+            self.x_param, self.y_param,
+            x_min=self.x_min, x_max=self.x_max,
+            y_min=self.y_min, y_max=self.y_max,
+            adaptive=self.adaptive, gate_id=self.gate_id,
+            x_scale=self.x_scale.copy() if self.x_scale else None,
+            y_scale=self.y_scale.copy() if self.y_scale else None,
+        )
+
     def to_dict(self) -> dict:
         d = super().to_dict()
         d.update(x_min=self.x_min, x_max=self.x_max,
@@ -245,6 +259,16 @@ class PolygonGate(Gate):
         self.vertices = vertices
         self.x_scale = ScaleFactory.parse(x_scale)
         self.y_scale = ScaleFactory.parse(y_scale)
+
+    def copy(self) -> PolygonGate:
+        return PolygonGate(
+            self.x_param, self.y_param,
+            vertices=[v for v in self.vertices],
+            x_scale=self.x_scale.copy() if self.x_scale else None,
+            y_scale=self.y_scale.copy() if self.y_scale else None,
+            name=self.name, adaptive=self.adaptive,
+            gate_id=self.gate_id,
+        )
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Test which events fall inside this polygon gate.
@@ -328,6 +352,16 @@ class EllipseGate(Gate):
         self.angle = angle
         self.x_scale = ScaleFactory.parse(x_scale)
         self.y_scale = ScaleFactory.parse(y_scale)
+
+    def copy(self) -> EllipseGate:
+        return EllipseGate(
+            self.x_param, self.y_param,
+            center=self.center, width=self.width, height=self.height,
+            angle=self.angle, adaptive=self.adaptive,
+            gate_id=self.gate_id,
+            x_scale=self.x_scale.copy() if self.x_scale else None,
+            y_scale=self.y_scale.copy() if self.y_scale else None,
+        )
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Test which events fall inside this ellipse.
@@ -422,6 +456,15 @@ class QuadrantGate(Gate):
         self.y_mid = y_mid
         self.x_scale = ScaleFactory.parse(x_scale)
         self.y_scale = ScaleFactory.parse(y_scale)
+
+    def copy(self) -> QuadrantGate:
+        return QuadrantGate(
+            self.x_param, self.y_param,
+            x_mid=self.x_mid, y_mid=self.y_mid,
+            adaptive=self.adaptive, gate_id=self.gate_id,
+            x_scale=self.x_scale.copy() if self.x_scale else None,
+            y_scale=self.y_scale.copy() if self.y_scale else None,
+        )
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Returns True for all events (the quadrant gate itself holds all).
@@ -519,6 +562,13 @@ class RangeGate(Gate):
         self.low = low
         self.high = high
         self.x_scale = ScaleFactory.parse(x_scale)
+
+    def copy(self) -> RangeGate:
+        return RangeGate(
+            self.x_param, low=self.low, high=self.high,
+            adaptive=self.adaptive, gate_id=self.gate_id,
+            x_scale=self.x_scale.copy() if self.x_scale else None,
+        )
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Test which events fall inside this range.

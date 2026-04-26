@@ -8,12 +8,13 @@ from __future__ import annotations
 import logging
 import numpy as np
 import pandas as pd
-from typing import Optional, Dict, Any, Tuple
+from typing import Optional, Dict, Any, Tuple, List
 
 from biopro.sdk.core import AnalysisBase, PluginState
-from .rendering import compute_pseudocolor_density
 from .transforms import apply_transform, TransformType
 from .scaling import AxisScale
+from .rendering import compute_pseudocolor_points
+from biopro.ui.theme import Colors
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,11 @@ class RenderTask(AnalysisBase):
         y_range: Tuple[float, float],
         width_px: int = 400,
         height_px: int = 400,
-        plot_type: str = "pseudocolor"
+        plot_type: str = "pseudocolor",
+        max_events: Optional[int] = 100000,
+        quality_multiplier: float = 1.0,
+        gates: List[Any] = None,
+        selected_gate_id: Optional[str] = None
     ) -> None:
         """Set the rendering parameters."""
         self.config = {
@@ -48,14 +53,20 @@ class RenderTask(AnalysisBase):
             "y_range": y_range,
             "width": width_px,
             "height": height_px,
-            "plot_type": plot_type
+            "plot_type": plot_type,
+            "max_events": max_events,
+            "quality_multiplier": quality_multiplier,
+            "gates": gates or [],
+            "selected_gate_id": selected_gate_id
         }
 
     def run(self, state: PluginState) -> dict:
         """Execute the render — called by TaskScheduler."""
         import matplotlib
+        matplotlib.use('Agg')
         from matplotlib.figure import Figure
         from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib import colormaps
         
         c = self.config
         if not c:
@@ -67,32 +78,82 @@ class RenderTask(AnalysisBase):
         if x_ch not in data.columns or y_ch not in data.columns:
             return {"error": f"Missing columns: {x_ch}, {y_ch}"}
 
-        # Apply transforms
-        x_raw = data[x_ch].values
-        y_raw = data[y_ch].values
+        # 1. Subsample for speed and visual density parity
+        DENSITY_FACTOR = 0.1 # Match main plot density
         
-        # (Transform logic here... simplified for now)
-        # In a real implementation, we'd use apply_transform
+        main_max = c.get("max_events")
+        if main_max is None: # Full mode
+            thumb_max = int(len(data) * DENSITY_FACTOR)
+        else: # Optimized mode
+            thumb_max = int(main_max * DENSITY_FACTOR)
+            
+        thumb_max = max(2000, min(thumb_max, 50000))
         
-        # Create figure
-        dpi = 100
+        if len(data) > thumb_max:
+            data = data.sample(n=thumb_max, random_state=42)
+
+        # 2. Transform raw data to display coordinates
+        def _get_xform_params(scale):
+            if scale.transform_type == TransformType.BIEXPONENTIAL:
+                return {
+                    "top": scale.logicle_t,
+                    "width": scale.logicle_w,
+                    "positive": scale.logicle_m,
+                    "negative": scale.logicle_a
+                }
+            return {}
+
+        x_vis = apply_transform(data[x_ch].values.astype(np.float64), c["x_scale"].transform_type, **_get_xform_params(c["x_scale"]))
+        y_vis = apply_transform(data[y_ch].values.astype(np.float64), c["y_scale"].transform_type, **_get_xform_params(c["y_scale"]))
+        
+        # 3. Transform limits to display coordinates
+        xlim = apply_transform(np.asarray(c["x_range"]), c["x_scale"].transform_type, **_get_xform_params(c["x_scale"]))
+        ylim = apply_transform(np.asarray(c["y_range"]), c["y_scale"].transform_type, **_get_xform_params(c["y_scale"]))
+
+        # 4. Create figure
+        dpi = 150
         fig = Figure(figsize=(c["width"]/dpi, c["height"]/dpi), dpi=dpi)
         canvas = FigureCanvasAgg(fig)
-        ax = fig.add_axes([0, 0, 1, 1]) # Full bleed
+        ax = fig.add_axes([0, 0, 1, 1])
         ax.set_axis_off()
-        
-        # Render
+        fig.patch.set_facecolor('#FFFFFF')
+        ax.set_facecolor('#FFFFFF')
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
+
+        # 5. Render data layer
         if c["plot_type"] == "pseudocolor":
-            # Grid size proportional to resolution for consistent "look"
-            gridsize = max(20, min(c["width"], c["height"]) // 4)
-            ax.hexbin(x_raw, y_raw, gridsize=gridsize, cmap="turbo", mincnt=1)
+            from .rendering import compute_pseudocolor_points
+            x_plot, y_plot, c_plot = compute_pseudocolor_points(
+                x_vis, y_vis, xlim, ylim, 
+                quality_multiplier=c.get("quality_multiplier", 1.0) * 0.8
+            )
+            if len(x_plot) > 0:
+                ax.scatter(
+                    x_plot, y_plot,
+                    c=c_plot,
+                    cmap=colormaps['turbo'],
+                    vmin=0.0, vmax=1.0,
+                    s=1.5, alpha=0.8, edgecolors='none'
+                )
         else:
-            ax.scatter(x_raw, y_raw, s=1, alpha=0.5)
+            valid = np.isfinite(x_vis) & np.isfinite(y_vis)
+            if np.any(valid):
+                ax.scatter(x_vis[valid], y_vis[valid], s=1.5, alpha=0.6, color=Colors.ACCENT_PRIMARY, edgecolors='none')
+
+        # 6. Render gate overlays (Identical to main FlowCanvas)
+        if c.get("gates"):
+            from ..ui.graph.flow_services import CoordinateMapper, GateOverlayRenderer
+            mapper = CoordinateMapper(c["x_scale"], c["y_scale"])
+            # Thinner lines for subplots (1.2 instead of 2.5)
+            renderer = GateOverlayRenderer(mapper, linewidth=1.2)
             
-        ax.set_xlim(c["x_range"])
-        ax.set_ylim(c["y_range"])
-        
-        # Draw and export
+            for gate in c["gates"]:
+                # Only draw if it matches current axes
+                if gate.x_param == x_ch and gate.y_param == y_ch:
+                    is_selected = (gate.gate_id == c.get("selected_gate_id"))
+                    renderer.render_gate(ax, gate, is_selected=is_selected)
+            
         canvas.draw()
         rgba_buffer = canvas.buffer_rgba()
         

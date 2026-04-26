@@ -334,35 +334,37 @@ class GateOverlayRenderer:
         "inactive": "#888888",  # Gray
     }
 
-    def __init__(self, coordinate_mapper: CoordinateMapper):
+    def __init__(self, coordinate_mapper: CoordinateMapper, linewidth: float = 2.5):
         """Initialize renderer with coordinate mapper.
         
         Args:
             coordinate_mapper: CoordinateMapper for display-space calculations
+            linewidth: Base thickness for gate lines
         """
         self.mapper = coordinate_mapper
+        self.linewidth = linewidth
 
     def render_gate(
         self,
         ax: Axes,
         gate: Gate,
         is_selected: bool = False,
+        color: str | None = None,
     ) -> Optional[OverlayArtists]:
         """Generic entry point for rendering any gate type using OCP dispatch."""
         from .gate_registry import GateRegistry
         
         # Check if there is a specialized renderer registered
-        # (We use class name as key for now, e.g., 'RectangleGate' -> 'rectangle')
         type_key = type(gate).__name__.lower().replace("gate", "")
         handler = GateRegistry.get_overlay_renderer(type_key)
         
         if handler:
-            return handler(self, ax, gate, is_selected)
+            return handler(self, ax, gate, is_selected, color)
             
         # Fallback to internal methods for core gates
         method_name = f"render_{type_key}"
         if hasattr(self, method_name):
-            return getattr(self, method_name)(ax, gate, is_selected)
+            return getattr(self, method_name)(ax, gate, is_selected, color)
             
         logger.warning(f"No renderer found for gate type: {type(gate)}")
         return None
@@ -372,17 +374,9 @@ class GateOverlayRenderer:
         ax: Axes,
         gate: RectangleGate,
         is_selected: bool = False,
+        color: str | None = None,
     ) -> OverlayArtists:
-        """Render RectangleGate on axes.
-        
-        Args:
-            ax: Matplotlib axes
-            gate: Gate to render
-            is_selected: Whether gate is selected (affects color)
-            
-        Returns:
-            OverlayArtists containing the patch and label
-        """
+        """Render RectangleGate on axes."""
         x_min = self.mapper.transform_x(np.array([gate.x_min]))[0]
         x_max = self.mapper.transform_x(np.array([gate.x_max]))[0]
         y_min = self.mapper.transform_y(np.array([gate.y_min]))[0]
@@ -391,13 +385,13 @@ class GateOverlayRenderer:
         width = x_max - x_min
         height = y_max - y_min
 
-        color = self.OVERLAY_COLORS["selected" if is_selected else "default"]
+        edge_color = color if color else self.OVERLAY_COLORS["selected" if is_selected else "default"]
         patch = MplRectangle(
             (x_min, y_min),
             width,
             height,
-            linewidth=2.5,
-            edgecolor=color,
+            linewidth=self.linewidth if not is_selected else self.linewidth * 1.5,
+            edgecolor=edge_color,
             facecolor="none",
             zorder=1000,
         )
@@ -412,6 +406,7 @@ class GateOverlayRenderer:
         ax: Axes,
         gate: PolygonGate,
         is_selected: bool = False,
+        color: str | None = None,
     ) -> OverlayArtists:
         """Render PolygonGate on axes."""
         vertices_x = np.array([v[0] for v in gate.vertices])
@@ -421,11 +416,11 @@ class GateOverlayRenderer:
         display_y = self.mapper.transform_y(vertices_y)
         display_verts = list(zip(display_x, display_y))
 
-        color = self.OVERLAY_COLORS["selected" if is_selected else "default"]
+        edge_color = color if color else self.OVERLAY_COLORS["selected" if is_selected else "default"]
         patch = MplPolygon(
             display_verts,
-            linewidth=2.5,
-            edgecolor=color,
+            linewidth=self.linewidth if not is_selected else self.linewidth * 1.5,
+            edgecolor=edge_color,
             facecolor="none",
             closed=True,
             zorder=1000,
@@ -443,6 +438,7 @@ class GateOverlayRenderer:
         ax: Axes,
         gate: EllipseGate,
         is_selected: bool = False,
+        color: str | None = None,
     ) -> OverlayArtists:
         """Render EllipseGate on axes."""
         cx, cy = gate.center
@@ -456,14 +452,14 @@ class GateOverlayRenderer:
             self.mapper.transform_y(np.array([cy + gate.height]))[0] - display_cy
         )
 
-        color = self.OVERLAY_COLORS["selected" if is_selected else "default"]
+        edge_color = color if color else self.OVERLAY_COLORS["selected" if is_selected else "default"]
         patch = MplEllipse(
             (display_cx, display_cy),
             2 * display_w,
             2 * display_h,
             angle=gate.angle,
-            linewidth=2.5,
-            edgecolor=color,
+            linewidth=self.linewidth if not is_selected else self.linewidth * 1.5,
+            edgecolor=edge_color,
             facecolor="none",
             zorder=1000,
         )
@@ -478,6 +474,7 @@ class GateOverlayRenderer:
         ax: Axes,
         gate: QuadrantGate,
         is_selected: bool = False,
+        color: str | None = None,
     ) -> OverlayArtists:
         """Render QuadrantGate on axes (four lines through midpoint)."""
         x_mid = self.mapper.transform_x(np.array([gate.x_mid]))[0]
@@ -486,11 +483,12 @@ class GateOverlayRenderer:
         xlim = ax.get_xlim()
         ylim = ax.get_ylim()
 
-        color = self.OVERLAY_COLORS["selected" if is_selected else "default"]
+        edge_color = color if color else self.OVERLAY_COLORS["selected" if is_selected else "default"]
+        lw = self.linewidth if not is_selected else self.linewidth * 1.5
 
         # Create cross-hair lines
-        h_line = ax.plot([xlim[0], xlim[1]], [y_mid, y_mid], color=color, linewidth=2)[0]
-        v_line = ax.plot([x_mid, x_mid], [ylim[0], ylim[1]], color=color, linewidth=2)[0]
+        h_line = ax.plot([xlim[0], xlim[1]], [y_mid, y_mid], color=edge_color, linewidth=lw)[0]
+        v_line = ax.plot([x_mid, x_mid], [ylim[0], ylim[1]], color=edge_color, linewidth=lw)[0]
 
         label_text = self._create_label(ax, gate, x_mid, y_mid)
 
@@ -501,18 +499,20 @@ class GateOverlayRenderer:
         ax: Axes,
         gate: RangeGate,
         is_selected: bool = False,
+        color: str | None = None,
     ) -> OverlayArtists:
         """Render RangeGate on axes (vertical bar on x-axis)."""
         x_low = self.mapper.transform_x(np.array([gate.low]))[0]
         x_high = self.mapper.transform_x(np.array([gate.high]))[0]
         ylim = ax.get_ylim()
 
-        color = self.OVERLAY_COLORS["selected" if is_selected else "default"]
+        edge_color = color if color else self.OVERLAY_COLORS["selected" if is_selected else "default"]
+        lw = self.linewidth if not is_selected else self.linewidth * 1.5
 
         # Create range bar
-        left_line = ax.plot([x_low, x_low], [ylim[0], ylim[1]], color=color, linewidth=2)[0]
-        right_line = ax.plot([x_high, x_high], [ylim[0], ylim[1]], color=color, linewidth=2)[0]
-        bottom_line = ax.plot([x_low, x_high], [ylim[0], ylim[0]], color=color, linewidth=2)[0]
+        left_line = ax.plot([x_low, x_low], [ylim[0], ylim[1]], color=edge_color, linewidth=lw)[0]
+        right_line = ax.plot([x_high, x_high], [ylim[0], ylim[1]], color=edge_color, linewidth=lw)[0]
+        bottom_line = ax.plot([x_low, x_high], [ylim[0], ylim[0]], color=edge_color, linewidth=lw)[0]
 
         label_x = (x_low + x_high) / 2
         label_text = self._create_label(ax, gate, label_x, ylim[0])

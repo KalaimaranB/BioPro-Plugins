@@ -49,7 +49,7 @@ class AxisTransformPanel(QWidget):
         self,
         axis_name: str,
         current_scale: AxisScale,
-        auto_range_callback: Callable[[], tuple[float, float]],
+        auto_range_callback: Callable[[Optional[float]], tuple[float, float]],
         parent=None,
     ) -> None:
         super().__init__(parent)
@@ -216,7 +216,7 @@ class AxisTransformPanel(QWidget):
             form_logicle, "Width (W):", 0, 50, self._on_w_slider,
             tooltip="W — Width of the linear region around 0.\n"
                     "Higher = more events near 0 shown in linear scale.\n"
-                    "Typical: 0.5. Try 1.0–2.0 if events cluster at 0."
+                    "Typical: 1.0. Try 1.5–2.0 if events cluster at 0."
         )
         
         # Positive Decades (M) slider
@@ -238,7 +238,7 @@ class AxisTransformPanel(QWidget):
         # Reset defaults button
         btn_reset = QPushButton("Reset to Defaults")
         self._style_button(btn_reset)
-        btn_reset.setToolTip("Restore W=0.5, M=4.5, A=0.0 (standard logicle defaults)")
+        btn_reset.setToolTip("Restore W=1.0, M=4.5, A=0.0 (standard logicle defaults)")
         btn_reset.clicked.connect(self._on_reset_logicle_defaults)
         form_logicle.addRow("", btn_reset)
         
@@ -353,7 +353,7 @@ class AxisTransformPanel(QWidget):
         self._emit_change()
 
     def _on_auto_range(self) -> None:
-        rng = self._auto_range_callback()
+        rng = self._auto_range_callback(self._scale.outlier_percentile)
         if rng:
             self._scale.min_val = rng[0]
             self._scale.max_val = rng[1]
@@ -455,7 +455,7 @@ class AxisTransformPanel(QWidget):
 
     def _on_reset_logicle_defaults(self) -> None:
         """Reset W, M, A to standard logicle defaults."""
-        self._scale.logicle_w = 0.5
+        self._scale.logicle_w = 1.0
         self._scale.logicle_m = 4.5
         self._scale.logicle_a = 0.0
         self._load_from_scale()

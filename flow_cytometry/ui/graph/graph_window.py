@@ -460,28 +460,23 @@ class GraphWindow(QWidget):
             y_scale_active.logicle_w = w_val
             y_scale_active.logicle_a = a_val
 
-        # ── KEY FIX ──────────────────────────────────────────────────────
-        # Calculate auto-range from the GATED subset, not from full sample events.
-        # When is_gated=True the events DataFrame already holds only the population
-        # that passed all parent gates, so percentile-based range detection will
-        # correctly zoom to that cluster instead of spanning the full instrument range.
-        # ─────────────────────────────────────────────────────────────────
-        # Always recompute min/max from the current sample's actual data.
-        # The cached scale in channel_scales carries the transform type and
-        # logicle params (user preference), but min/max must reflect THIS
-        # sample and THIS channel — reusing a stale min/max from a previous
-        # channel combination causes SSC-A to inherit FSC-A's range, etc.
-        if x_ch in events.columns:
+        # ── AUTO-RANGE (first-time only) ──────────────────────────────────
+        # Only compute min/max when the channel has never been ranged before
+        # (min_val is None). If the user has manually set limits, or a previous
+        # render already established them, we preserve those values entirely.
+        # This is the single gate that prevents the view from jumping whenever
+        # the user switches channels, enters a gate, or changes transform type.
+        if x_ch in events.columns and x_scale_active.min_val is None:
             vmin, vmax = calculate_auto_range(
-                events[x_ch].values, 
+                sample.fcs_data.events[x_ch].values,   # full sample, not gated subset
                 x_scale_active.transform_type,
                 outlier_percentile=x_scale_active.outlier_percentile
             )
             x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
 
-        if y_ch in events.columns:
+        if y_ch in events.columns and y_scale_active.min_val is None:
             vmin, vmax = calculate_auto_range(
-                events[y_ch].values, 
+                sample.fcs_data.events[y_ch].values,   # full sample, not gated subset
                 y_scale_active.transform_type,
                 outlier_percentile=y_scale_active.outlier_percentile
             )
@@ -496,6 +491,7 @@ class GraphWindow(QWidget):
         self._state.channel_scales[y_ch] = self._y_scale.copy()
 
         self._canvas.begin_update()
+        self._canvas.set_sample_id(self._sample_id)
         self._canvas.set_axes(x_ch, y_ch, x_label, y_label)
         self._canvas.set_scales(x_scale_active, y_scale_active)
         self._canvas.end_update()       # single redraw with correct axes+scales
@@ -540,12 +536,23 @@ class GraphWindow(QWidget):
         x_ch = self._x_combo.currentData() or self._x_combo.currentText()
         self._state.active_x_param = x_ch
         if x_ch in self._state.channel_scales:
+            # Restore user-configured scale for this channel
             self._x_scale = self._state.channel_scales[x_ch].copy()
+        else:
+            # First time seeing this channel: inherit the current transform type
+            # but leave min_val/max_val as None so _render_initial auto-ranges it once.
+            from ...analysis._utils import TransformTypeResolver
+            tt = TransformTypeResolver.resolve(self._state.active_transform_x)
+            self._x_scale = AxisScale(tt)
             
         y_ch = self._y_combo.currentData() or self._y_combo.currentText()
         self._state.active_y_param = y_ch
         if y_ch in self._state.channel_scales:
             self._y_scale = self._state.channel_scales[y_ch].copy()
+        else:
+            from ...analysis._utils import TransformTypeResolver
+            tt = TransformTypeResolver.resolve(self._state.active_transform_y)
+            self._y_scale = AxisScale(tt)
             
         self._render_initial()
         self._render_spinner.setVisible(False)
@@ -637,11 +644,11 @@ class GraphWindow(QWidget):
         x_name = self._x_combo.currentText()
         y_name = self._y_combo.currentText()
 
-        def do_auto_range_x() -> tuple[float, float]:
-            return self._calculate_auto_range("x")
+        def do_auto_range_x(outlier_p: float = 0.1) -> tuple[float, float]:
+            return self._calculate_auto_range("x", outlier_p)
             
-        def do_auto_range_y() -> tuple[float, float]:
-            return self._calculate_auto_range("y")
+        def do_auto_range_y(outlier_p: float = 0.1) -> tuple[float, float]:
+            return self._calculate_auto_range("y", outlier_p)
 
         dlg = TransformDialog(
             x_name=x_name,
@@ -704,14 +711,20 @@ class GraphWindow(QWidget):
             source="GraphWindow"
         ))
         
-    def _calculate_auto_range(self, axis: str) -> tuple[float, float]:
-        """Compute the robust min/max for the given axis, using gated data."""
+    def _calculate_auto_range(self, axis: str, outlier_p: Optional[float] = None) -> tuple[float, float]:
+        """Compute the robust min/max for the given axis, using gated data.
+        
+        Args:
+            axis: "x" or "y".
+            outlier_p: Percentile to clip at each end. If None, uses the
+                       value stored in the current axis scale.
+        """
         sample = self._state.experiment.samples.get(self._sample_id)
         if not sample or not sample.fcs_data or sample.fcs_data.events is None:
             return (0.0, 1.0)
     
         events = sample.fcs_data.events
-        # ── FIX: apply hierarchy so range matches what is displayed ──────
+        # Apply gate hierarchy so range reflects what is actually displayed
         if self._node_id:
             node = sample.gate_tree.find_node_by_id(self._node_id)
             if node:
@@ -722,7 +735,8 @@ class GraphWindow(QWidget):
             return (0.0, 1.0)
     
         scale = self._x_scale if axis == "x" else self._y_scale
-        return calculate_auto_range(events[col].values, scale.transform_type, outlier_percentile=scale.outlier_percentile)
+        pct = outlier_p if outlier_p is not None else scale.outlier_percentile
+        return calculate_auto_range(events[col].values, scale.transform_type, outlier_percentile=pct)
 
     def _update_breadcrumb(self) -> None:
         """Update the breadcrumb navigation bar showing gating path."""

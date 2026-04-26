@@ -28,7 +28,6 @@ class GateDrawingFSM:
         self.canvas = canvas
         self.state = DrawingState.IDLE
         self._drag_start: Optional[Tuple[float, float]] = None
-        self._polygon_vertices: List[Tuple[float, float]] = []
 
     def handle_press(self, x: float, y: float, mode: str):
         """Handle mouse press event."""
@@ -39,7 +38,7 @@ class GateDrawingFSM:
 
         if mode == "polygon":
             self.state = DrawingState.POLYGON
-            self._polygon_vertices.append((x, y))
+            self.canvas._polygon_vertices.append((x, y))
             self.canvas._draw_polygon_progress()
             return
 
@@ -59,9 +58,9 @@ class GateDrawingFSM:
         if self.state == DrawingState.DRAWING and self._drag_start is not None:
             x0, y0 = self._drag_start
             self.canvas._draw_rubber_band(x0, y0, x, y, mode)
-        elif self.state == DrawingState.POLYGON and self._polygon_vertices:
+        elif self.state == DrawingState.POLYGON and self.canvas._polygon_vertices:
             # Live preview for polygon
-            logger.debug(f"FSM polygon preview: vertices={len(self._polygon_vertices)}, current=({x:.2f}, {y:.2f})")
+            logger.debug(f"FSM polygon preview: vertices={len(self.canvas._polygon_vertices)}, current=({x:.2f}, {y:.2f})")
             self.canvas._draw_polygon_progress(current_mouse=(x, y))
 
     def handle_release(self, x: float, y: float, mode: str):
@@ -82,16 +81,16 @@ class GateDrawingFSM:
 
     def handle_dblclick(self, x: float, y: float, mode: str):
         """Handle double click (polygon completion)."""
-        if mode == "polygon" and len(self._polygon_vertices) >= 3:
+        if mode == "polygon" and len(self.canvas._polygon_vertices) >= 3:
             # Finalize polygon
-            self.canvas._finalize_polygon(self._polygon_vertices)
-            self._polygon_vertices.clear()
+            self.canvas._finalize_polygon(self.canvas._polygon_vertices)
+            self.canvas._polygon_vertices.clear()
             self.state = DrawingState.IDLE
 
     def cancel(self):
         """Cancel current drawing operation."""
         self.state = DrawingState.IDLE
         self._drag_start = None
-        self._polygon_vertices.clear()
+        self.canvas._polygon_vertices.clear()
         self.canvas._clear_rubber_band()
         self.canvas._clear_polygon_progress()

@@ -31,7 +31,7 @@ class AxisScale:
     # Biexponential (Logicle) parameters
     # Matches FlowJo v11 Transform dialog defaults and naming
     logicle_t: float = 262144.0  # Top data value (determines max scale)
-    logicle_w: float = 0.5       # Width Basis (linear range around 0)
+    logicle_w: float = 1.0       # Width Basis (linear range around 0)
     logicle_m: float = 4.5       # Positive decades
     logicle_a: float = 0.0       # Extra negative decades
     
@@ -62,6 +62,20 @@ class AxisScale:
             "logicle_a": self.logicle_a,
             "outlier_percentile": self.outlier_percentile,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AxisScale":
+        """Create an AxisScale instance from a dictionary."""
+        return cls(
+            transform_type=TransformType(data.get("transform_type", "linear")),
+            min_val=data.get("min_val"),
+            max_val=data.get("max_val"),
+            logicle_t=data.get("logicle_t", 262144.0),
+            logicle_w=data.get("logicle_w", 1.0),
+            logicle_m=data.get("logicle_m", 4.5),
+            logicle_a=data.get("logicle_a", 0.0),
+            outlier_percentile=data.get("outlier_percentile", 0.1),
+        )
 
 
 def calculate_auto_range(
@@ -168,20 +182,20 @@ def detect_logicle_top(data) -> float:
 def estimate_logicle_params(
     data: np.ndarray,
     t: float = 262144.0,
-    m: float = 4.5
+    width: float = 1.0,
 ) -> tuple[float, float]:
     """Estimate Logicle W and A parameters from data.
 
-    FlowJo defaults: W=0.5 (1 visual decade linear region), A=0.0.
+    FlowJo defaults: W=1.0 (1 visual decade linear region), A=0.0.
     A is only set > 0 when there is measurable negative data.
     """
     valid = data[np.isfinite(data)]
     if len(valid) == 0:
-        return 0.5, 0.0
+        return 1.0, 0.0
 
-    # FlowJo-standard linear-region width. W=0.5 = squish zone is 1 visual
-    # decade wide, matching FlowJo defaults exactly.
-    w = 0.5
+    # FlowJo-standard linear-region width. W=1.0 = squish zone is 2 visual
+    # decades wide, matching user requested default.
+    w = 1.0
 
     # Only add negative decades when >0.5% of events are genuinely negative
     n_neg = int(np.sum(valid < -10))
