@@ -1,62 +1,57 @@
 import pytest
-from unittest.mock import MagicMock, patch
-
-pytestmark = pytest.mark.ui
-
+import pandas as pd
+import numpy as np
+from unittest.mock import MagicMock
 from flow_cytometry.ui.widgets.group_preview import GroupPreviewPanel, PreviewThumbnail
 from flow_cytometry.analysis.state import FlowState
-from flow_cytometry.analysis.event_bus import Event, EventType
-from flow_cytometry.analysis.experiment import Sample, Group
+from flow_cytometry.analysis.experiment import Sample
 
 @pytest.fixture
 def flow_state_groups():
     state = FlowState()
     
-    # Mock Sample 1
-    sample1 = Sample(sample_id="s1", name="Sample 1")
-    class MockFcsData:
-        def __init__(self):
-            self.file_path = "s1.fcs"
-    sample1.fcs_data = MockFcsData()
+    # Sample 1
+    sample1 = Sample(sample_id="s1", display_name="Sample 1")
+    sample1.fcs_data = MagicMock()
+    sample1.fcs_data.events = pd.DataFrame({
+        "FSC-A": np.random.normal(50000, 10000, 100),
+        "SSC-A": np.random.normal(50000, 10000, 100)
+    })
     state.experiment.samples["s1"] = sample1
     
-    # Mock Sample 2
-    sample2 = Sample(sample_id="s2", name="Sample 2")
-    sample2.fcs_data = MockFcsData()
+    # Sample 2
+    sample2 = Sample(sample_id="s2", display_name="Sample 2")
+    sample2.fcs_data = MagicMock()
+    sample2.fcs_data.events = pd.DataFrame({
+        "FSC-A": np.random.normal(50000, 10000, 100),
+        "SSC-A": np.random.normal(50000, 10000, 100)
+    })
     state.experiment.samples["s2"] = sample2
     
-    # Create group
-    group = Group(group_id="g1", name="Test Group", sample_ids=["s1", "s2"])
-    state.experiment.groups["g1"] = group
+    # Assign groups
+    sample1.group_ids = {"g1"}
+    sample2.group_ids = {"g1"}
     
     return state
 
-@patch('PyQt6.QtWidgets.QWidget')
-@patch('PyQt6.QtWidgets.QScrollArea')
-@patch('flow_cytometry.ui.widgets.group_preview.QThreadPool.globalInstance')
-def test_group_preview_panel_init(mock_pool, mock_scroll, mock_widget, flow_state_groups):
+@pytest.mark.ui
+def test_group_preview_panel_init(qtbot, flow_state_groups):
     panel = GroupPreviewPanel(flow_state_groups)
+    qtbot.addWidget(panel)
     assert panel._state == flow_state_groups
-    assert panel._active_group_id is None
+    assert panel._current_sample_id is None
 
-@patch('PyQt6.QtWidgets.QWidget')
-@patch('flow_cytometry.ui.widgets.group_preview.QThreadPool.globalInstance')
-def test_preview_thumbnail_init(mock_pool, mock_widget, flow_state_groups):
-    sample = flow_state_groups.experiment.samples["s1"]
-    thumb = PreviewThumbnail(sample, flow_state_groups)
-    
-    assert thumb._sample == sample
+@pytest.mark.ui
+def test_preview_thumbnail_init(qtbot, flow_state_groups):
+    thumb = PreviewThumbnail("s1", flow_state_groups)
+    qtbot.addWidget(thumb)
+    assert thumb._sample_id == "s1"
     assert thumb._state == flow_state_groups
-    assert thumb._current_gate_id is None
 
-def test_render_preview_to_buffer():
-    from flow_cytometry.ui.widgets.group_preview import render_preview_to_buffer
-    from flow_cytometry.ui.graph.flow_services import CoordinateMapper
+def test_render_task_for_preview():
+    from flow_cytometry.ui.graph.render_task import RenderTask
     from flow_cytometry.analysis.scaling import AxisScale
     from flow_cytometry.analysis.transforms import TransformType
-    from flow_cytometry.analysis.gating import RectangleGate
-    import pandas as pd
-    import numpy as np
     
     data = pd.DataFrame({
         "FSC-A": np.random.normal(50000, 10000, 100),
@@ -64,23 +59,29 @@ def test_render_preview_to_buffer():
     })
     
     scale = AxisScale(TransformType.LINEAR)
-    mapper = CoordinateMapper(scale, scale)
+    scale.min_val, scale.max_val = 0, 100000
     
-    # Just verify it returns bytes without crashing
-    buf = render_preview_to_buffer(
+    task = RenderTask()
+    task.configure(
         data=data,
         x_param="FSC-A",
         y_param="SSC-A",
         x_scale=scale,
         y_scale=scale,
-        mapper=mapper,
-        display_mode="pseudocolor",
-        active_gates=[],
-        preview_gate=None,
-        width=100,
-        height=100,
-        dpi=50
+        x_range=(0, 100000),
+        y_range=(0, 100000),
+        width_px=100,
+        height_px=100,
+        plot_type="pseudocolor"
     )
     
-    assert isinstance(buf, bytes)
-    assert len(buf) > 0
+    # Mock state for AnalysisBase.run
+    mock_state = MagicMock()
+    
+    result = task.run(mock_state)
+    
+    assert "image_data" in result
+    assert isinstance(result["image_data"], bytes)
+    assert len(result["image_data"]) > 0
+    assert result["width"] == 100
+    assert result["height"] == 100

@@ -54,6 +54,15 @@ matplotlib
 scipy
 ```
 
+## Documentation
+
+The documentation suite is organized into two primary silos:
+
+- **[📖 User Documentation (For Scientists)](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/INDEX.md)**: Intro, Getting Started, Analysis Guide, and Scientific Logic.
+- **[🛠️ Developer Documentation (For Engineers)](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/INDEX.md)**: Architecture, API Reference, UI Engine, and Testing Guide.
+
+---
+
 ## Architecture
 
 ```

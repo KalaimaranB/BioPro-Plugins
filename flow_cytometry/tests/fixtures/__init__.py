@@ -20,6 +20,29 @@ from flow_cytometry.analysis.gating import (
 )
 
 
+from flow_cytometry.analysis.state import FlowState
+from flow_cytometry.analysis.experiment import Sample, Experiment
+from flow_cytometry.analysis.population_service import PopulationService
+
+# ── Mock Objects ──────────────────────────────────────────────────────────
+
+class MockFcsData:
+    """Mock for FCS data that implements the minimal interface needed for testing."""
+    def __init__(self, events: pd.DataFrame):
+        self.events = events
+        self.parameters = {col: {} for col in events.columns}
+        self.metadata = {}
+        self.num_events = len(events)
+        self.file_path = "test.fcs"
+
+    @property
+    def channels(self) -> list[str]:
+        return list(self.events.columns)
+
+    @property
+    def markers(self) -> list[str]:
+        return [""] * len(self.channels)
+
 # ── FCS Data Fixtures ─────────────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
@@ -248,6 +271,21 @@ def synthetic_events_medium():
     }
     
     return pd.DataFrame(data).iloc[:n_events]
+
+
+@pytest.fixture
+def flow_state(synthetic_events_small):
+    """Returns a pre-populated FlowState with a test sample and services."""
+    state = FlowState()
+    sample = Sample(sample_id="test_sample_1", display_name="Test Sample")
+    sample.fcs_data = MockFcsData(synthetic_events_small)
+    state.experiment.samples[sample.sample_id] = sample
+    
+    # Initialize services
+    from flow_cytometry.analysis.axis_manager import AxisManager
+    state.population_service = PopulationService(state)
+    state.axis_manager = AxisManager(state)
+    return state
 
 
 # ── Utility Fixtures ───────────────────────────────────────────────────────

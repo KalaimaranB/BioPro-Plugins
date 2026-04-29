@@ -79,6 +79,7 @@ def log_transform(
 def biexponential_transform(
     data: np.ndarray,
     *,
+    enable_dithering: bool = False,
     top: float = 262144.0,
     width: float = 1.0,
     positive: float = 4.5,
@@ -95,10 +96,12 @@ def biexponential_transform(
     approximation as a last resort.
 
     Args:
-        top:      Maximum expected data value (T parameter).
-        width:    Linearization width (W parameter, decades).
-        positive: Number of positive decades (M parameter).
-        negative: Additional negative decades (A parameter).
+        data:             Raw channel values.
+        enable_dithering: If True, apply +/-0.5 uniform jitter to prevent barcode artifacts.
+        top:              Maximum expected data value (T parameter).
+        width:            Linearization width (W parameter, decades).
+        positive:         Number of positive decades (M parameter).
+        negative:         Additional negative decades (A parameter).
 
     Returns:
         Transformed values in display units.
@@ -108,9 +111,14 @@ def biexponential_transform(
     # Apply continuous +/-0.5 uniform dithering to prevent integer banding
     # (barcode artifacts) which dramatically skew density calculations near 0
     data_jitter = np.asarray(data, dtype=np.float64).copy()
-    #data_jitter += np.random.uniform(-0.5, 0.5, size=data_jitter.shape)
+    if enable_dithering:
+        data_jitter += np.random.uniform(-0.5, 0.5, size=data_jitter.shape)
 
     # ── Attempt 1: flowkit.transforms.LogicleTransform ────────────────
+    # Primary method: Uses FlowKit's object-oriented LogicleTransform class.
+    # We cache the instantiated transform object because Logicle calculation 
+    # initialization (spline generation) is mathematically expensive. 
+    # Reusing the transform significantly improves UI slider responsiveness.
     try:
         if cache_key not in _logicle_cache:
             import flowkit as fk
@@ -128,13 +136,20 @@ def biexponential_transform(
         pass
 
     # ── Attempt 2: flowutils.transforms.logicle ──────────────────────
+    # Secondary fallback: If the high-level FlowKit wrapper is unavailable or 
+    # has a breaking API change, we drop down to the underlying `flowutils` C-extension.
+    # This directly calls the Parks (2006) implementation without caching.
     try:
         from flowutils.transforms import logicle as fu_logicle
         return fu_logicle(data_jitter, t=top, w=width, m=positive, a=negative)
     except ImportError:
         pass
 
-    # ── Attempt 3: asinh fallback (parameterized) ────────────────────
+    # ── Attempt 3: arcsinh Approximation ─────────────────────────────
+    # Ultimate fallback: If the environment lacks C-compiled dependencies (e.g. 
+    # running in a pure-python or restricted CI environment), we use an analytical 
+    # arcsinh approximation. This is mathematically similar to logicle around zero, 
+    # ensuring the application doesn't hard-crash when rendering.
     logger.warning(
         f"Neither flowkit nor flowutils available — using parameterized asinh fallback (W={width}, M={positive}). "
         "Install flowkit for the real Logicle transform."

@@ -6,13 +6,12 @@ from unittest.mock import MagicMock
 from biopro.sdk.core import PluginState
 from flow_cytometry.analysis.state import FlowState
 from flow_cytometry.analysis.experiment import Experiment, Sample
-from flow_cytometry.analysis.event_bus import EventBus
+from .fixtures import *
 
 @pytest.fixture
 def empty_state():
     """Returns a fresh FlowState with an empty experiment."""
-    plugin_state = PluginState()
-    state = FlowState(plugin_state)
+    state = FlowState()
     state.experiment = Experiment()
     return state
 
@@ -38,8 +37,3 @@ def state_with_sample(empty_state, sample_with_data):
     """Returns a FlowState with one sample loaded."""
     empty_state.experiment.samples[sample_with_data.sample_id] = sample_with_data
     return empty_state
-
-@pytest.fixture
-def event_bus():
-    """Returns a fresh EventBus."""
-    return EventBus()

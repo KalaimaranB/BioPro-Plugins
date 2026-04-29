@@ -1,0 +1,116 @@
+"""RectangleGate class.
+"""
+
+from __future__ import annotations
+
+from typing import Optional
+
+import numpy as np
+import pandas as pd
+
+from .base import Gate
+from ..transforms import apply_transform, TransformType
+from ..scaling import AxisScale
+from .._utils import (
+    ScaleFactory,
+    TransformTypeResolver,
+    BiexponentialParameters,
+    ScaleSerializer,
+)
+
+class RectangleGate(Gate):
+    """Rectangular (2-D) or range (1-D) gate defined by min/max bounds.
+
+    Bounds are stored in **raw data space**. The ``contains()`` method
+    projects both events and bounds into display space using the axis
+    scales before comparison.
+
+    Attributes:
+        x_min, x_max: X-axis bounds in raw data space.
+        y_min, y_max: Y-axis bounds in raw data space (ignored if ``y_param`` is None).
+        x_scale:      Axis scale for X parameter.
+        y_scale:      Axis scale for Y parameter.
+    """
+
+    def __init__(
+        self,
+        x_param: str,
+        y_param: Optional[str] = None,
+        *,
+        x_min: float = -np.inf,
+        x_max: float = np.inf,
+        y_min: float = -np.inf,
+        y_max: float = np.inf,
+        adaptive: bool = False,
+        gate_id: Optional[str] = None,
+        x_scale: Optional[AxisScale] = None,
+        y_scale: Optional[AxisScale] = None,
+    ) -> None:
+        super().__init__(
+            x_param, y_param,
+            adaptive=adaptive, gate_id=gate_id
+        )
+        self.x_min = x_min
+        self.x_max = x_max
+        self.y_min = y_min
+        self.y_max = y_max
+        self.x_scale: AxisScale = ScaleFactory.parse(x_scale)
+        self.y_scale: AxisScale = ScaleFactory.parse(y_scale)
+
+    def contains(self, events: pd.DataFrame) -> np.ndarray:
+        """Test which events fall inside this rectangle."""
+        if self.x_param not in events.columns:
+            return np.zeros(len(events), dtype=bool)
+        
+        x_raw = events[self.x_param].values
+        bounds_x_raw = np.array([self.x_min, self.x_max])
+        
+        x_type = TransformTypeResolver.resolve(
+            getattr(self.x_scale, "transform_type", "linear")
+        )
+        x_kwargs = (BiexponentialParameters(self.x_scale).to_dict()
+                    if x_type == TransformType.BIEXPONENTIAL else {})
+
+        # Project X to display space
+        x_disp = apply_transform(x_raw, x_type, **x_kwargs)
+        bounds_x_disp = apply_transform(bounds_x_raw, x_type, **x_kwargs)
+        x_min_disp, x_max_disp = bounds_x_disp[0], bounds_x_disp[1]
+
+        mask = (x_disp >= x_min_disp) & (x_disp <= x_max_disp)
+
+        # Apply Y constraint if present
+        if self.y_param and self.y_param in events.columns:
+            y_raw = events[self.y_param].values
+            bounds_y_raw = np.array([self.y_min, self.y_max])
+
+            y_type = TransformTypeResolver.resolve(
+                getattr(self.y_scale, "transform_type", "linear")
+            )
+            y_kwargs = (BiexponentialParameters(self.y_scale).to_dict()
+                        if y_type == TransformType.BIEXPONENTIAL else {})
+
+            y_disp = apply_transform(y_raw, y_type, **y_kwargs)
+            bounds_y_disp = apply_transform(bounds_y_raw, y_type, **y_kwargs)
+            y_min_disp, y_max_disp = bounds_y_disp[0], bounds_y_disp[1]
+
+            mask &= (y_disp >= y_min_disp) & (y_disp <= y_max_disp)
+
+        return mask
+
+    def copy(self) -> RectangleGate:
+        return RectangleGate(
+            self.x_param, self.y_param,
+            x_min=self.x_min, x_max=self.x_max,
+            y_min=self.y_min, y_max=self.y_max,
+            adaptive=self.adaptive, gate_id=self.gate_id,
+            x_scale=self.x_scale.copy() if self.x_scale else None,
+            y_scale=self.y_scale.copy() if self.y_scale else None,
+        )
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update(x_min=self.x_min, x_max=self.x_max,
+                 y_min=self.y_min, y_max=self.y_max)
+        d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
+        d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
+        return d

@@ -99,23 +99,10 @@ class GatingRibbon(QWidget):
         layout.addWidget(sep2)
 
         # Smart features
-        btn_fmo = PrimaryButton("🎯 FMO Auto-Gate")
-        btn_fmo.setToolTip("Auto-set gate boundaries from FMO controls (99th pct)")
-        btn_fmo.clicked.connect(self.fmo_autogate_requested)
-        layout.addWidget(btn_fmo)
-
         btn_copy = SecondaryButton("📋 Copy Gates")
         btn_copy.setToolTip("Copy gates from this sample to all samples in the group")
         btn_copy.clicked.connect(self.copy_gates_requested)
         layout.addWidget(btn_copy)
-
-        btn_adaptive = SecondaryButton("🧠 Adaptive")
-        btn_adaptive.setCheckable(True)
-        btn_adaptive.setToolTip(
-            "Enable adaptive gating — gates auto-adjust to each sample's data"
-        )
-        btn_adaptive.toggled.connect(self.adaptive_toggled)
-        layout.addWidget(btn_adaptive)
 
         layout.addStretch()
 

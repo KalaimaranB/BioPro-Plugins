@@ -43,7 +43,7 @@ class TestGateWithLinearTransform:
 
     def test_range_gate_linear_cd3(self, sample_a_events):
         """Apply Range gate on linear CD3."""
-        gate = RangeGate('FITC-A', y_min=50, y_max=250)
+        gate = RangeGate('FITC-A', low=50, high=250)
         
         valid_mask = ~sample_a_events['FITC-A'].isna()
         valid_events = sample_a_events[valid_mask]
@@ -76,11 +76,11 @@ class TestGateWithLogicleTransform:
         # Extract values
         fsc_values = sample_a_events['FSC-A'].values
         
-        # Create a Logicle scale
-        scale = AxisScale(transform_type=TransformType.LOGICLE)
+        # Create a BiExponential scale (mapped from Logicle)
+        scale = AxisScale(transform_type=TransformType.BIEXPONENTIAL)
         
         # Check that scale properties exist
-        assert scale.transform_type == TransformType.LOGICLE
+        assert scale.transform_type == TransformType.BIEXPONENTIAL
         assert hasattr(scale, 'logicle_t')
         assert hasattr(scale, 'logicle_m')
 
@@ -137,15 +137,17 @@ class TestGateBoundaryBehaviorWithTransforms:
         
         # Create data just inside and outside boundaries
         near_boundary = pd.DataFrame({
-            'FSC-A': [99_999, 100_001, 300_001, 299_999],
-            'SSC-A': [100_000, 100_000, 100_000, 100_000],
+            'FSC-A': [49_999, 50_001, 200_001, 199_999],
+            'SSC-A': [25_000, 25_000, 25_000, 25_000],
         })
         
         membership = gate.contains(near_boundary)
         
         # Points just inside should be True, just outside should be False
-        assert membership[1] == True  # 100_001 is inside
-        assert membership[0] == False  # 99_999 is outside
+        assert membership[1] == True  # 50_001 is inside
+        assert membership[0] == False  # 49_999 is outside
+        assert membership[3] == True  # 199_999 is inside
+        assert membership[2] == False  # 200_001 is outside
 
 
 @pytest.mark.functional
@@ -164,9 +166,9 @@ class TestGateStatisticsWithTransforms:
         ssc_mean = gated['SSC-A'].mean()
         
         # Verify statistics
-        assert 100_000 <= fsc_mean <= 300_000, f"FSC mean {fsc_mean} out of range"
+        assert 50_000 <= fsc_mean <= 200_000, f"FSC mean {fsc_mean} out of range"
         assert fsc_std > 0 and not np.isnan(fsc_std)
-        assert 50_000 <= ssc_mean <= 200_000, f"SSC mean {ssc_mean} out of range"
+        assert 1_000 <= ssc_mean <= 50_000, f"SSC mean {ssc_mean} out of range"
 
     def test_statistics_linear_cd_markers(self, sample_a_events):
         """Compute statistics on CD markers (linear)."""
@@ -232,7 +234,7 @@ class TestMultiAxisGateTransformations:
             level2 = valid_events[level2_mask]
             
             # Level 3: CD3 range
-            gate3 = RangeGate('FITC-A', y_min=50, y_max=250)
+            gate3 = RangeGate('FITC-A', low=50, high=250)
             valid_mask3 = ~level2['FITC-A'].isna()
             valid_events3 = level2[valid_mask3]
             

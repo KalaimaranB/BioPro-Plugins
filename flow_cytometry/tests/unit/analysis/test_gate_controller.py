@@ -1,31 +1,22 @@
 import pytest
 import pandas as pd
-from flow_cytometry.analysis.state import FlowState
+from PyQt6.QtWidgets import QApplication
+from PyQt6.QtCore import QThreadPool
+import sys
+
+# Ensure QApplication exists for signal processing
+app = QApplication.instance() or QApplication(sys.argv)
+
 from flow_cytometry.analysis.gate_controller import GateController
 from flow_cytometry.analysis.experiment import Sample
 from flow_cytometry.analysis.gating import RectangleGate, QuadrantGate, GateNode
-
-@pytest.fixture
-def flow_state(synthetic_events_small):
-    state = FlowState()
-    sample = Sample(sample_id="test_sample_1", name="Test Sample")
-    
-    # Mock FCS Data
-    class MockFcsData:
-        def __init__(self, events):
-            self.events = events
-            self.parameters = {col: {} for col in events.columns}
-            self.metadata = {}
-            self.num_events = len(events)
-            self.file_path = "test.fcs"
-    
-    sample.fcs_data = MockFcsData(synthetic_events_small)
-    state.experiment.samples[sample.sample_id] = sample
-    return state
+from flow_cytometry.analysis.population_service import PopulationService
 
 @pytest.fixture
 def gate_controller(flow_state):
-    return GateController(flow_state)
+    controller = GateController(flow_state)
+    controller.sync_stats = True
+    return controller
 
 def test_add_rectangle_gate(gate_controller, flow_state, gate_rectangle_singlet):
     sample_id = "test_sample_1"
@@ -42,7 +33,15 @@ def test_add_rectangle_gate(gate_controller, flow_state, gate_rectangle_singlet)
     assert node.name == "Singlets"
     assert node.gate == gate_rectangle_singlet
     
+    # Wait for background task to complete
+    print("Waiting for thread pool...")
+    QThreadPool.globalInstance().waitForDone()
+    print("Processing events...")
+    for _ in range(10): # Process multiple times to be sure
+        QApplication.processEvents()
+    
     # Check stats were computed
+    print(f"Node stats: {node.statistics}")
     assert "count" in node.statistics
     assert node.statistics["count"] > 0
     assert node.statistics["pct_parent"] <= 100.0
@@ -67,6 +66,17 @@ def test_modify_gate(gate_controller, flow_state, gate_rectangle_singlet):
     
     sample = flow_state.experiment.samples[sample_id]
     node = sample.gate_tree.find_node_by_id(node_id)
+    
+    # Wait for initial stats
+    QThreadPool.globalInstance().waitForDone()
+    for _ in range(10): QApplication.processEvents()
+    
+    if "count" not in node.statistics:
+        print(f"DEBUG: node.statistics is empty: {node.statistics}")
+        # Try one more time?
+        QThreadPool.globalInstance().waitForDone()
+        QApplication.processEvents()
+        
     orig_count = node.statistics["count"]
     
     # Modify gate to be much smaller
@@ -81,6 +91,10 @@ def test_modify_gate(gate_controller, flow_state, gate_rectangle_singlet):
     
     assert success is True
     assert gate_rectangle_singlet.x_min == 100_000
+    
+    # Wait for background task
+    QThreadPool.globalInstance().waitForDone()
+    for _ in range(10): QApplication.processEvents()
     
     # Check stats updated
     new_count = node.statistics["count"]
@@ -113,6 +127,10 @@ def test_split_population(gate_controller, flow_state, gate_rectangle_singlet):
     
     sibling_id = gate_controller.split_population(sample_id, node_id)
     assert sibling_id is not None
+    
+    # Wait for background task
+    QThreadPool.globalInstance().waitForDone()
+    for _ in range(10): QApplication.processEvents()
     
     sample = flow_state.experiment.samples[sample_id]
     sibling = sample.gate_tree.find_node_by_id(sibling_id)

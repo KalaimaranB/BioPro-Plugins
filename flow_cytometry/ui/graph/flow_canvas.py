@@ -27,22 +27,13 @@ import pandas as pd
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-from matplotlib.patches import (
-    Rectangle as MplRectangle,
-    Polygon as MplPolygon,
-    Ellipse as MplEllipse,
-    FancyBboxPatch,
-)
-from matplotlib.lines import Line2D
-from matplotlib import colormaps
-from fast_histogram import histogram2d as fast_hist2d
 
 from PyQt6.QtCore import pyqtSignal, QTimer, Qt
 from PyQt6.QtWidgets import QSizePolicy, QLabel
 
 from biopro.ui.theme import Colors
 
-from ...analysis.transforms import TransformType, apply_transform, invert_transform
+from ...analysis.transforms import TransformType, apply_transform
 from ...analysis.scaling import AxisScale, calculate_auto_range
 from ...analysis.gating import (
     Gate,
@@ -59,6 +50,14 @@ from .flow_services import (
     GateFactory,
     GateOverlayRenderer,
 )
+from .renderers.factory import RenderStrategyFactory
+from biopro.sdk.core.events import CentralEventBus
+from ...analysis import events
+
+# Decomposed components
+from .canvas.data_layer import DataLayerRenderer
+from .canvas.gate_layer import GateLayerRenderer
+from .canvas.event_handler import CanvasEventHandler
 
 logger = logging.getLogger(__name__)
 print(f"DEBUG: flow_canvas.py LOADED from {__file__}")
@@ -148,7 +147,7 @@ class FlowCanvas(FigureCanvasQTAgg):
     quality_mode_changed = pyqtSignal(str)  # "optimized" or "transparent"
     gate_preview_emitted = pyqtSignal(object) # Temporary gate object
 
-    def __init__(self, state: Optional[FlowState] = None, parent=None) -> None:
+    def __init__(self, state: Optional[FlowState] = None, controller: Optional[GateController] = None, parent=None) -> None:
         # Apply BioPro theme
         import matplotlib
         for key, val in _MPL_STYLE.items():
@@ -159,8 +158,9 @@ class FlowCanvas(FigureCanvasQTAgg):
         super().__init__(self._fig)
         self.setStyleSheet(f"background-color: {_PLOT_BG};")
 
-        logger.info(f"FlowCanvas.__init__: state={state}, parent={parent}")
+        logger.info(f"FlowCanvas.__init__: state={state}, controller={controller}, parent={parent}")
         self._state = state
+        self._controller = controller
         self.setParent(parent)
         self.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
@@ -176,6 +176,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
 
         # ── Data state ────────────────────────────────────────────────
+        self._sample_id: Optional[str] = None
         self._current_data: Optional[pd.DataFrame] = None
         self._x_param: str = "FSC-A"
         self._y_param: str = "SSC-A"
@@ -202,26 +203,19 @@ class FlowCanvas(FigureCanvasQTAgg):
 
         # ── Gate drawing state machine ────────────────────────────────
         self._drawing_mode = GateDrawingMode.NONE
-        self._is_drawing = False
-        self._drag_start: Optional[tuple[float, float]] = None
-        self._rubber_band_patch = None
-        self._polygon_vertices: list[tuple[float, float]] = []
-        self._polygon_marker_lines: list = []
-        self._instruction_text = None  # on-canvas drawing hint
-        self._closing_line = None      # polygon closing preview line
+        
+        # Phase 5: Gate Drawing FSM (Manages state, previews, and instructions)
+        from .gate_drawing_fsm import GateDrawingFSM
+        self._fsm = GateDrawingFSM(self)
 
         # ── Gate overlays ─────────────────────────────────────────────
         self._gate_patches: dict[str, dict] = {}  # gate_id → patch info
         self._active_gates: list[Gate] = []
         self._gate_nodes: list[GateNode] = []      # for stat labels
         self._selected_gate_id: Optional[str] = None
-        
-        # Phase 5: Gate Drawing FSM
-        from .gate_drawing_fsm import GateDrawingFSM
-        self._fsm = GateDrawingFSM(self)
+        self._instruction_text = None  # on-canvas drawing hint
 
         # ── Setup ──────────────────────────────────────────────────────
-        self._render_quality: str = "optimized"  # "optimized" or "transparent"
         self._max_events: Optional[int] = 100_000  # Default subsampling limit
         self._quality_multiplier: float = 1.0     # Grid resolution scaler
         self._use_cache: bool = False              # DISABLED FOR DEBUGGING
@@ -230,6 +224,13 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._editing_gate_id: Optional[str] = None
         self._edit_handle_idx: Optional[int] = None
         self._edit_handles: list = []  # matplotlib artists for handles
+
+        # ── Signals ───────────────────────────────────────────────────
+        if self._controller:
+            self._controller.gate_geometry_changed.connect(self._on_controller_geometry_changed)
+            self._controller.gate_selected.connect(self._on_controller_selected)
+            self._controller.gate_removed.connect(self._on_controller_gate_removed)
+            self._controller.gate_renamed.connect(self._on_controller_gate_renamed)
 
         # Mouse event connections
         self._mpl_conn_press = self.mpl_connect("button_press_event", self._on_press)
@@ -252,6 +253,11 @@ class FlowCanvas(FigureCanvasQTAgg):
         )
         self._loading_label.setVisible(False)
         self._loading_label.raise_()
+
+        # ── Decomposed components ─────────────────────────────────────
+        self._data_renderer = DataLayerRenderer(self)
+        self._gate_renderer = GateLayerRenderer(self)
+        self._event_handler = CanvasEventHandler(self)
 
         self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.customContextMenuRequested.connect(self._on_context_menu)
@@ -395,24 +401,16 @@ class FlowCanvas(FigureCanvasQTAgg):
         self._selected_gate_id = gate_id
         self._render_gate_layer()
 
-    def _on_quality_mode_changed(self, mode: str) -> None:
-        """Handle render quality changes.
+
+
+    def _on_transform_changed(self) -> None:
+        """Called when a transform is modified (e.g. logicle params).
         
-        Optimized: 100k events, 1x resolution, caching enabled.
-        Full: All events, 2x resolution, caching disabled.
+        Invalidates the bitmap cache so the plot is fully re-rendered
+        in the next frame with new scales applied to the data.
         """
-        self._render_quality = mode
-        if mode == "transparent": # "Full" mode
-            self._max_events = None
-            self._quality_multiplier = 2.0
-            self._use_cache = False
-        else: # "optimized"
-            self._max_events = 100_000
-            self._quality_multiplier = 1.0
-            self._use_cache = True
-        
-        # Notify subscribers (like GraphWindow) that quality changed
-        self.quality_mode_changed.emit(mode)
+        logger.info("FlowCanvas: Transform changed, invalidating cache.")
+        self._canvas_bitmap_cache = None
         self.redraw()
 
     def _auto_range_axes(self) -> None:
@@ -467,7 +465,15 @@ class FlowCanvas(FigureCanvasQTAgg):
                      len(self._current_data) if self._current_data is not None else "None",
                      self._x_param, self._y_param, self.width(), self.height())
         self._canvas_bitmap_cache = None  # Invalidate cached bitmap
+        
         self._show_loading()
+        
+        # Defer the heavy data rendering by 50ms to allow the Qt event loop
+        # to process the show_loading() call and paint the overlay.
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(50, self._perform_heavy_redraw)
+
+    def _perform_heavy_redraw(self) -> None:
         try:
             self._render_data_layer()
         except Exception as exc:
@@ -502,134 +508,9 @@ class FlowCanvas(FigureCanvasQTAgg):
     def _render_data_layer(self) -> None:
         """Render the expensive scatter/histogram data.
         
-        After this runs, we snapshot the axes bitmap so that gate
-        overlays can be drawn on top without re-rendering data.
+        Delegated to DataLayerRenderer.
         """
-        logger.info(f"FlowCanvas._render_data_layer START: mode={self._display_mode}")
-        self._ax.clear()
-        self._ax.set_axis_on()
-        self._ax.set_facecolor(_PLOT_BG)
-        self._gate_patches.clear()
-        self._edit_handles.clear()
-        self._gate_artists.clear()
-
-        df = self._current_data
-
-        # Validate columns exist
-        if self._x_param not in df.columns:
-            self._show_error(f"Channel '{self._x_param}' not found")
-            return
-
-        # Get raw data
-        x_raw = df[self._x_param].values.astype(np.float64)
-
-        # Histogram mode only needs X
-        if self._display_mode == DisplayMode.HISTOGRAM:
-            self._draw_histogram(x_raw)
-            return
-        elif self._display_mode == DisplayMode.CDF:
-            self._draw_cdf(x_raw)
-            return
-
-        if self._y_param not in df.columns:
-            self._show_error(f"Channel '{self._y_param}' not found")
-            return
-
-        y_raw = df[self._y_param].values.astype(np.float64)
-
-        # Apply transforms based on AxisScale settings
-        x_kwargs = {
-            "top": self._x_scale.logicle_t,
-            "width": self._x_scale.logicle_w,
-            "positive": self._x_scale.logicle_m,
-            "negative": self._x_scale.logicle_a,
-        } if self._x_scale.transform_type == TransformType.BIEXPONENTIAL else {}
-        
-        y_kwargs = {
-            "top": self._y_scale.logicle_t,
-            "width": self._y_scale.logicle_w,
-            "positive": self._y_scale.logicle_m,
-            "negative": self._y_scale.logicle_a,
-        } if self._y_scale.transform_type == TransformType.BIEXPONENTIAL else {}
-
-        # ... 
-        x_data = apply_transform(x_raw, self._x_scale.transform_type, **x_kwargs)
-        y_data = apply_transform(y_raw, self._y_scale.transform_type, **y_kwargs)
-
-        # 1. Establish stable axis limits BEFORE rendering.
-        if self._x_scale.min_val is not None and self._x_scale.max_val is not None:
-            x_lim = apply_transform(
-                np.array([self._x_scale.min_val, self._x_scale.max_val]),
-                self._x_scale.transform_type, **x_kwargs,
-            )
-            self._ax.set_xlim(x_lim[0], x_lim[1])
-        else:
-            # FIX: Calculate boundaries using RAW data, then transform the limits
-            valid_x_raw = x_raw[np.isfinite(x_raw)]
-            if len(valid_x_raw) > 0:
-                raw_min, raw_max = calculate_auto_range(valid_x_raw, self._x_scale.transform_type)
-                x_lim = apply_transform(
-                    np.array([raw_min, raw_max]), 
-                    self._x_scale.transform_type, **x_kwargs
-                )
-                self._ax.set_xlim(x_lim[0], x_lim[1])
-
-        if self._y_scale.min_val is not None and self._y_scale.max_val is not None:
-            y_lim = apply_transform(
-                np.array([self._y_scale.min_val, self._y_scale.max_val]),
-                self._y_scale.transform_type, **y_kwargs,
-            )
-            self._ax.set_ylim(y_lim[0], y_lim[1])
-        else:
-            # FIX: Calculate boundaries using RAW data, then transform the limits
-            valid_y_raw = y_raw[np.isfinite(y_raw)]
-            if len(valid_y_raw) > 0:
-                raw_min, raw_max = calculate_auto_range(valid_y_raw, self._y_scale.transform_type)
-                y_lim = apply_transform(
-                    np.array([raw_min, raw_max]), 
-                    self._y_scale.transform_type, **y_kwargs
-                )
-                self._ax.set_ylim(y_lim[0], y_lim[1])
-
-        # 2. Draw based on mode using the established limits
-        if self._display_mode == DisplayMode.DOT_PLOT:
-            self._draw_dot(x_data, y_data)
-        elif self._display_mode == DisplayMode.PSEUDOCOLOR:
-            self._draw_pseudocolor(x_data, y_data)
-        elif self._display_mode == DisplayMode.CONTOUR:
-            self._draw_contour(x_data, y_data)
-        elif self._display_mode == DisplayMode.DENSITY:
-            self._draw_density(x_data, y_data)
-
-        # Labels
-        self._ax.set_xlabel(self._x_label, fontsize=9, color="#333333")
-        self._ax.set_ylabel(self._y_label, fontsize=9, color="#333333")
-        self._apply_axis_formatting()
-        
-        # Standard professional axes styling
-        for spine in self._ax.spines.values():
-            spine.set_color('#333333')
-            spine.set_linewidth(1.0)
-        self._ax.tick_params(colors='#333333', labelsize=8)
-
-        # Event count annotation
-        n = len(x_data)
-        self._ax.annotate(
-            f"{n:,} events",
-            xy=(0.98, 0.98),
-            xycoords="axes fraction",
-            ha="right", va="top",
-            fontsize=8,
-            color="#333333",
-            alpha=0.8,
-        )
-
-        self._ax.grid(True, color="#B0B0B0", alpha=0.35, linewidth=0.5)
-        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
-        
-        # Snapshot the background
-        self.draw()  # flush to Qt so we can snapshot
-        logger.info("FlowCanvas._render_data_layer COMPLETE")
+        self._data_renderer.render()
 
     def _apply_axis_formatting(self) -> None:
         """Apply biological decade formatting to axes if transformed.
@@ -708,648 +589,111 @@ class FlowCanvas(FigureCanvasQTAgg):
 
     def _render_gate_layer(self) -> None:
         """Draw gate overlays on top of the cached data layer.
-
-        This is extremely fast because it never touches scatter data.
+        
+        Delegated to GateLayerRenderer.
         """
-        # Remove previous gate artists
-        for artist in self._gate_artists:
-            try:
-                artist.remove()
-            except (ValueError, AttributeError, NotImplementedError):
-                pass
-        self._gate_artists.clear()
-        self._gate_patches.clear()
-
-        # Draw new gate overlays (this populates self._gate_artists)
-        self._redraw_gate_overlays()
-
-        # Re-show instruction text if a tool is active
-        if self._drawing_mode != GateDrawingMode.NONE:
-            self._show_instruction(self._drawing_mode)
-
-        self.draw_idle()
-
-    # ── Drawing modes ─────────────────────────────────────────────────
-
-    def _draw_dot(self, x: np.ndarray, y: np.ndarray) -> None:
-        """Simple scatter plot with small, translucent dots."""
-        # Subsample if too many events for performance
-        n = len(x)
-        if self._max_events is not None and n > self._max_events:
-            idx = np.random.choice(n, self._max_events, replace=False)
-            x, y = x[idx], y[idx]
-
-        self._ax.scatter(
-            x, y,
-            s=2,
-            c=Colors.ACCENT_PRIMARY,
-            alpha=0.25,
-            rasterized=True,
-            edgecolors="none",
-        )
-
-    def _draw_pseudocolor(self, x, y):
-        """FlowJo-style pseudocolor with Equal Probability and Axis Pile-up."""
-        import numpy as np
-        from scipy.ndimage import gaussian_filter
-        from scipy.stats import rankdata
-        from matplotlib import colormaps
-        from fast_histogram import histogram2d as fast_hist2d
-        
-        logger.info(f"Rendering pseudocolor for {len(x)} points")
-    
-        valid = np.isfinite(x) & np.isfinite(y)
-        x_vis, y_vis = x[valid], y[valid]
-    
-        if len(x_vis) < 10:
-            self._draw_dot(x_vis, y_vis)
-            return
-    
-        x_lo, x_hi = self._ax.get_xlim()
-        y_lo, y_hi = self._ax.get_ylim()
-    
-        def _safe_range(lo, hi, data, margin=0.05):
-            if not (np.isfinite(lo) and np.isfinite(hi)) or hi - lo < 1e-6:
-                p1, p99 = np.percentile(data[np.isfinite(data)], [1, 99])
-                span = max(p99 - p1, 1.0)
-                return p1 - span * margin, p99 + span * margin
-            return lo, hi
-    
-        x_lo, x_hi = _safe_range(x_lo, x_hi, x_vis)
-        y_lo, y_hi = _safe_range(y_lo, y_hi, y_vis)
-        
-        # FIX 1: Axis Pile-up. Force out-of-bounds data to the visual boundaries
-        # so they don't disappear from the density calculation.
-        x_vis = np.clip(x_vis, x_lo, x_hi)
-        y_vis = np.clip(y_vis, y_lo, y_hi)
-    
-        # Uniform subsampling
-        if self._max_events is not None and len(x_vis) > self._max_events:
-            rng = np.random.default_rng(42)
-            idx = rng.choice(len(x_vis), self._max_events, replace=False)
-            x_vis, y_vis = x_vis[idx], y_vis[idx]
-    
-        # ── Density estimation ────────────────────────────────────────────────
-        # Adaptive bin count and sigma based on event density
-        n_points = len(x_vis)
-        N_BINS = int(min(512, max(64, np.sqrt(n_points) * 1.5)) * self._quality_multiplier)
-        sigma = max(0.8, 1.5 * (N_BINS / 512))
-
-        H = fast_hist2d(
-            y_vis, x_vis,
-            range=[[y_lo, y_hi], [x_lo, x_hi]],
-            bins=N_BINS,
-        )
-        H_smooth = gaussian_filter(H.astype(np.float64), sigma=sigma)
-    
-        # ── Per-event density lookup (bilinear interpolation) ─────────────────
-        # Nearest-neighbour (H_smooth[y_idx, x_idx]) makes events in the same
-        # bin share an identical colour, creating a visible grid / "pixelated"
-        # pattern. Bilinear interpolation blends between neighbouring bins for
-        # smooth FlowJo-quality density gradients.
-        x_span = max(x_hi - x_lo, 1e-12)
-        y_span = max(y_hi - y_lo, 1e-12)
-        x_frac = np.clip((x_vis - x_lo) / x_span * N_BINS - 0.5, 0, N_BINS - 1)
-        y_frac = np.clip((y_vis - y_lo) / y_span * N_BINS - 0.5, 0, N_BINS - 1)
-        from scipy.ndimage import map_coordinates
-        densities = map_coordinates(H_smooth, [y_frac, x_frac], order=1, mode='nearest')
-    
-        # FIX 2: Equal Probability (Percentile) Normalization.
-        # This converts linear density into a percentile, inflating sparse populations
-        # so they get assigned hot colors just like FlowJo does.
-        if len(densities) > 0:
-            c_plot = rankdata(densities) / len(densities)
-        else:
-            c_plot = densities
-    
-        # Z-sort: dense events render on top
-        sort_idx = np.argsort(c_plot)
-        x_plot = x_vis[sort_idx]
-        y_plot = y_vis[sort_idx]
-        c_plot_sorted = c_plot[sort_idx]
-    
-        self._ax.scatter(
-            x_plot, y_plot,
-            c=c_plot_sorted,
-            cmap=colormaps['turbo'],
-            vmin=0.0, vmax=1.0,
-            s=2.0,
-            alpha=0.8,
-            edgecolors='none',
-            linewidths=0,
-            rasterized=False,
-        )
-    
-        self._ax.set_xlim(x_lo, x_hi)
-        self._ax.set_ylim(y_lo, y_hi)
+        self._gate_renderer.render()
 
 
-    def _draw_contour(self, x: np.ndarray, y: np.ndarray) -> None:
-        """Contour density plot using 2D histogram."""
-        valid = np.isfinite(x) & np.isfinite(y)
-        x_vis, y_vis = x[valid], y[valid]
 
-        if len(x_vis) < 50:
-            self._draw_dot(x_vis, y_vis)
-            return
 
-        x_lo, x_hi = self._ax.get_xlim()
-        y_lo, y_hi = self._ax.get_ylim()
-
-        # Adaptive binning for contour
-        n_points = len(x_vis)
-        n_bins = int(min(256, max(64, np.sqrt(n_points))))
-        
-        from fast_histogram import histogram2d
-        h = histogram2d(y_vis, x_vis, bins=n_bins, range=[[y_lo, y_hi], [x_lo, x_hi]])
-        
-        # Smooth for cleaner contours
-        from scipy.ndimage import gaussian_filter
-        sigma = max(0.8, 1.5 * (n_bins / 128))
-        h_smooth = gaussian_filter(h.astype(np.float64), sigma=sigma)
-
-        x_grid = np.linspace(x_lo, x_hi, n_bins)
-        y_grid = np.linspace(y_lo, y_hi, n_bins)
-
-        self._ax.contourf(
-            x_grid, y_grid, h_smooth,
-            levels=12,
-            cmap="magma",
-        )
-        self._ax.contour(
-            x_grid, y_grid, h_smooth,
-            levels=6,
-            colors="#FFFFFF",
-            alpha=0.3,
-            linewidths=0.5,
-        )
-
-    def _draw_density(self, x: np.ndarray, y: np.ndarray) -> None:
-        """2D density plot using imshow (faster than KDE)."""
-        valid = np.isfinite(x) & np.isfinite(y)
-        x_vis, y_vis = x[valid], y[valid]
-
-        if len(x_vis) < 50:
-            self._draw_dot(x_vis, y_vis)
-            return
-
-        x_lo, x_hi = self._ax.get_xlim()
-        y_lo, y_hi = self._ax.get_ylim()
-
-        n_points = len(x_vis)
-        n_bins = int(min(512, max(64, np.sqrt(n_points) * 1.5)))
-        
-        from fast_histogram import histogram2d
-        h = histogram2d(y_vis, x_vis, bins=n_bins, range=[[y_lo, y_hi], [x_lo, x_hi]])
-        
-        from scipy.ndimage import gaussian_filter
-        sigma = max(0.8, 1.5 * (n_bins / 256))
-        h_smooth = gaussian_filter(h.astype(np.float64), sigma=sigma)
-
-        # Log scaling for density visualization (FlowJo style)
-        h_log = np.log1p(h_smooth)
-
-        self._ax.imshow(
-            h_log,
-            extent=[x_lo, x_hi, y_lo, y_hi],
-            origin='lower',
-            cmap="viridis",
-            aspect='auto',
-            interpolation='gaussian',
-        )
-
-    def _draw_histogram(self, x: np.ndarray) -> None:
-        """1-D histogram."""
-        x_data = apply_transform(
-            x, self._x_scale.transform_type,
-            top=self._x_scale.logicle_t,
-            width=self._x_scale.logicle_w,
-            positive=self._x_scale.logicle_m,
-            negative=self._x_scale.logicle_a,
-        )
-        valid = np.isfinite(x_data)
-        x_data = x_data[valid]
-
-        if len(x_data) == 0:
-            self._show_empty()
-            return
-
-        n_points = len(x_data)
-        n_bins = min(256, max(64, int(np.sqrt(n_points) * 2)))
-
-        counts, bins, patches = self._ax.hist(
-            x_data,
-            bins=n_bins,
-            color=Colors.ACCENT_PRIMARY,
-            alpha=0.7,
-            edgecolor="none",
-            density=False,
-        )
-        # Apply padding to top of histogram
-        if len(counts) > 0:
-            self._ax.set_ylim(0, counts.max() * 1.1)
-        self._ax.set_xlabel(self._x_label, fontsize=9, color="#333333")
-        self._ax.set_ylabel("Density", fontsize=9, color="#333333")
-
-        n = len(x_data)
-        self._ax.annotate(
-            f"{n:,} events",
-            xy=(0.98, 0.98),
-            xycoords="axes fraction",
-            ha="right", va="top",
-            fontsize=8,
-            color="#333333",
-        )
-        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
-        self.draw()
-
-    def _draw_cdf(self, x: np.ndarray) -> None:
-        """1-D CDF plot."""
-        x_data = apply_transform(
-            x, self._x_scale.transform_type,
-            top=self._x_scale.logicle_t,
-            width=self._x_scale.logicle_w,
-            positive=self._x_scale.logicle_m,
-            negative=self._x_scale.logicle_a,
-        )
-        valid = np.isfinite(x_data)
-        x_data = np.sort(x_data[valid])
-
-        if len(x_data) == 0:
-            self._show_empty()
-            return
-
-        cdf = np.arange(1, len(x_data) + 1) / len(x_data)
-        self._ax.plot(
-            x_data, cdf,
-            color=Colors.ACCENT_PRIMARY,
-            linewidth=1.5,
-        )
-        self._ax.set_xlabel(self._x_label, fontsize=9, color="#333333")
-        self._ax.set_ylabel("CDF", fontsize=9, color="#333333")
-        self._fig.subplots_adjust(left=0.12, bottom=0.12, right=0.95, top=0.95)
-        self.draw()
-
-    # ── Gate overlay rendering ────────────────────────────────────────
-
-    def _redraw_gate_overlays(self) -> None:
-        """Draw all active gate overlays on the axes.
-        
-        All created artists are appended to self._gate_artists for
-        lightweight cleanup by _render_gate_layer().
-        """
-        self._gate_patches.clear()
-        self._gate_overlay_artists.clear()
-
-        recorded_geometries = set()
-        for i, gate in enumerate(self._active_gates):
-            if gate.gate_id in recorded_geometries:
-                continue
-            recorded_geometries.add(gate.gate_id)
-
-            # Base style
-            is_selected = (gate.gate_id == self._selected_gate_id)
-            color = _GATE_PALETTE[i % len(_GATE_PALETTE)]
-            edge_color = _GATE_SELECTED_EDGE if is_selected else color
-            lw = 3.0 if is_selected else max(_GATE_LINEWIDTH * 0.5, 0.8)
-            
-            fill_alpha = _GATE_SELECTED_ALPHA if is_selected else max(_GATE_ALPHA * 0.2, 0.05)
-            
-            # Find all nodes sharing this gate to determine style and labels
-            sharing_nodes = [n for n in self._gate_nodes if n.gate and n.gate.gate_id == gate.gate_id]
-            if not sharing_nodes:
-                continue
-            
-            # Use the style of the first node for the primary boundary
-            primary_node = sharing_nodes[0]
-            ls = "-"
-            if primary_node.negated:
-                ls = ":" if not is_selected else "--"
-                edge_color = Colors.ACCENT_NEGATIVE if not is_selected else edge_color
-
-            # We have sharing_nodes populated above
-
-            # Use the new GateOverlayRenderer service (OCP-compliant)
-            artists = self._gate_overlay_renderer.render_gate(self._ax, gate, is_selected, edge_color)
-
-            # Store artists for hit-testing and cleanup
-            if artists:
-                self._gate_overlay_artists[gate.gate_id] = {
-                    "patch": artists.patch,
-                    "gate": gate,
-                    "artists": artists,
-                }
-                if artists.patch:
-                    self._gate_artists.append(artists.patch)
-                if artists.label_text:
-                    self._gate_artists.append(artists.label_text)
-                if artists.handles:
-                    for h in artists.handles.values():
-                        self._gate_artists.append(h)
-
-    def _draw_node_labels(
-        self, 
-        nodes: list[GateNode], 
-        pos: tuple[float, float], 
-        is_selected: bool,
-        **text_kwargs
-    ) -> None:
-        """Draw labels for all populations sharing a gate, offset vertically."""
-        for i, node in enumerate(nodes):
-            label_text = self._format_gate_label(node.gate, node)
-            color = "#000000" # Pure black text for all labels
-            if is_selected:
-                color = "#000000" # Stay black but maybe bolded via kwargs
-
-            # Vertical offset: 14 points per label
-            direction = -1 if text_kwargs.get("va") == "top" else 1
-            y_off = 14 * i * direction
-            
-            txt = self._ax.annotate(
-                label_text,
-                xy=pos,
-                xytext=(0, y_off),
-                textcoords="offset points",
-                fontsize=10,
-                color="#000000",
-                fontweight="bold",
-                zorder=12 + i,
-                bbox=dict(boxstyle="round,pad=0.3", facecolor="#FFFFFFCC", edgecolor="#CCCCCC", linewidth=0.5),
-                **text_kwargs
-            )
-            self._gate_artists.append(txt)
-
-    def _format_gate_label(
-        self, gate: Gate, node: Optional[GateNode] = None
-    ) -> str:
-        """Format a gate label with indentation, negation, and statistics."""
-        if node:
-            name = node.name
-        else:
-            prefix = "NOT " if gate.negated else ""
-            name = prefix + gate.name
-
-        # Indentation based on tree depth
-        indent = ""
-        if node:
-            depth = 0
-            curr = node
-            while curr.parent:
-                depth += 1
-                curr = curr.parent
-            indent = "  " * (max(0, depth - 1)) # Indent relative to plot population
-
-        label = f"{indent}{name}"
-        
-        if node and node.statistics:
-            count = node.statistics.get("count", "")
-            pct = node.statistics.get("pct_parent", "")
-            
-            if count:
-                label += f"\n{indent}{int(count):,}"
-            if pct:
-                label += f" ({pct:.1f}%)"
-        return label
 
     # ── Mouse event handlers — gate drawing state machine ─────────────
 
     def keyPressEvent(self, event) -> None:
         """Handle keyboard — Escape cancels drawing."""
-        from PyQt6.QtCore import Qt as _Qt
-        if event.key() == _Qt.Key.Key_Escape:
-            if self._drawing_mode != GateDrawingMode.NONE:
-                self._cancel_drawing()
-                self._render_gate_layer()  # clean up any artifacts
+        self._event_handler.handle_key_press(event)
         super().keyPressEvent(event)
 
     def _on_press(self, event) -> None:
         """Handle mouse press — start drawing or select gate."""
-        if event.inaxes != self._ax or event.dblclick:
-            logger.warning(f"FlowCanvas._on_press: Click ignored (inaxes={event.inaxes}, dblclick={event.dblclick})")
-            return
-        
-        logger.info(f"FlowCanvas._on_press: x={event.xdata:.2f}, y={event.ydata:.2f}, mode={self._drawing_mode.value}")
-        self._fsm.handle_press(event.xdata, event.ydata, self._drawing_mode.value)
+        self._event_handler.handle_press(event)
 
     def _on_motion(self, event) -> None:
         """Handle mouse movement — rubber-band preview during drawing."""
-        if event.inaxes != self._ax:
-            return
-        try:
-            # logger.info(f"Canvas _on_motion: x={event.xdata}, y={event.ydata}")
-            self._fsm.handle_motion(event.xdata, event.ydata, self._drawing_mode.value)
-        except Exception as e:
-            logger.error(f"Error in motion handler: {e}", exc_info=True)
+        self._event_handler.handle_motion(event)
 
     def _on_release(self, event) -> None:
         """Handle mouse release — finalize gate drawing."""
-        if event.inaxes != self._ax:
-            self._fsm.cancel()
-            return
-        self._fsm.handle_release(event.xdata, event.ydata, self._drawing_mode.value)
+        self._event_handler.handle_release(event)
 
     def _on_dblclick(self, event) -> None:
         """Handle double-click — close polygon."""
-        if not event.dblclick or event.inaxes != self._ax:
-            return
-        self._fsm.handle_dblclick(event.xdata, event.ydata, self._drawing_mode.value)
-
-    def _draw_rubber_band(self, x0: float, y0: float, x1: float, y1: float, mode: str) -> None:
-        """Draw rubber-band preview for drag-based gates."""
-        self._clear_rubber_band()
-        
-        if mode == "rectangle":
-            self._rubber_band_patch = MplRectangle(
-                (min(x0, x1), min(y0, y1)), abs(x1 - x0), abs(y1 - y0),
-                linewidth=1.5, edgecolor=_RUBBER_BAND_COLOR, facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.2, linestyle=":", zorder=20
-            )
-        elif mode == "ellipse":
-            cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
-            w, h = abs(x1 - x0), abs(y1 - y0)
-            self._rubber_band_patch = MplEllipse(
-                (cx, cy), w, h,
-                linewidth=1.5, edgecolor=_RUBBER_BAND_COLOR, facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.2, linestyle=":", zorder=20
-            )
-        elif mode == "range":
-            ylim = self._ax.get_ylim()
-            self._rubber_band_patch = MplRectangle(
-                (min(x0, x1), ylim[0]), abs(x1 - x0), ylim[1] - ylim[0],
-                linewidth=1.5, edgecolor=_RUBBER_BAND_COLOR, facecolor=_RUBBER_BAND_COLOR,
-                alpha=0.2, linestyle=":", zorder=20
-            )
-            
-        if self._rubber_band_patch:
-            self._ax.add_patch(self._rubber_band_patch)
-            self.draw_idle()
+        self._event_handler.handle_dblclick(event)
 
     def _finalize_drag_gate(self, x0: float, y0: float, x1: float, y1: float, mode: str) -> None:
-        """Finalize a gate drawn by dragging."""
-        if mode == "rectangle":
-            self._finalize_rectangle(x0, y0, x1, y1)
-        elif mode == "ellipse":
-            self._finalize_ellipse(x0, y0, x1, y1)
-        elif mode == "range":
-            self._finalize_range(x0, x1)
-        self._clear_previews()
+        self._event_handler.finalize_drag_gate(x0, y0, x1, y1, mode)
+
+    def _finalize_rectangle(self, x0, y0, x1, y1):
+        # Kept for backward compatibility if needed, but FSM calls _finalize_drag_gate
+        self._event_handler.finalize_drag_gate(x0, y0, x1, y1, "rectangle")
 
     def _finalize_polygon(self, vertices: List[Tuple[float, float]]) -> None:
-        """Create a PolygonGate from the accumulated vertices."""
-        gate = self._gate_factory.create_polygon(vertices)
-        self.gate_created.emit(gate)
-        self._clear_polygon_progress()
-        self._clear_previews()
+        self._event_handler.finalize_polygon(vertices)
 
-    def _finalize_ellipse(
-        self, x0: float, y0: float, x1: float, y1: float
-    ) -> None:
-        """Create an EllipseGate from the drawn bounding box."""
-        gate = self._gate_factory.create_ellipse(x0, y0, x1, y1)
-        self.gate_created.emit(gate)
+    def _finalize_ellipse(self, x0: float, y0: float, x1: float, y1: float) -> None:
+        self._event_handler.finalize_drag_gate(x0, y0, x1, y1, "ellipse")
 
     def _finalize_quadrant(self, x: float, y: float) -> None:
-        """Create a QuadrantGate at the clicked position."""
-        gate = self._gate_factory.create_quadrant(x, y)
-        self.gate_created.emit(gate)
+        self._event_handler.finalize_quadrant(x, y)
 
     def _finalize_range(self, x0: float, x1: float) -> None:
-        """Create a RangeGate from the drawn range."""
-        gate = self._gate_factory.create_range(x0, x1)
-        self.gate_created.emit(gate)
+        self._event_handler.finalize_drag_gate(x0, 0, x1, 0, "range")
 
-    # ── Gate selection ────────────────────────────────────────────────
+    def _try_select_gate(self, x: float, y: float) -> bool:
+        return self._event_handler.try_select_gate(x, y)
 
-    def _try_select_gate(self, x: float, y: float) -> None:
-        """Check if a click hits any gate overlay and select it."""
-        hit_id = None
+    def _find_node_id_for_gate(self, gate_id: str) -> Optional[str]:
+        """Look up which node_id corresponds to this gate_id in active nodes."""
+        for node in self._gate_nodes:
+            if node.gate and node.gate.gate_id == gate_id:
+                return node.node_id
+        return None
 
-        for gate_id, info in self._gate_overlay_artists.items():
-            patch = info["patch"]
-            if patch.contains_point(self._ax.transData.transform((x, y))):
-                hit_id = gate_id
-                break
+    # ── Controller Event Handlers ─────────────────────────────────────
 
-        old_selected = self._selected_gate_id
-        self._selected_gate_id = hit_id
-
-        if hit_id != old_selected:
-            self._render_gate_layer()
-            self.gate_selected.emit(hit_id)
-
-    # ── Rubber-band and polygon progress helpers ──────────────────────
-
-    def _clear_rubber_band(self) -> None:
-        """Remove the current rubber-band preview patch."""
-        if self._rubber_band_patch is not None:
-            try:
-                self._rubber_band_patch.remove()
-            except (ValueError, AttributeError, NotImplementedError):
-                pass
-            self._rubber_band_patch = None
-
-    def _draw_polygon_progress(self, *args, **kwargs) -> None:
-        """Draw vertices, connecting lines, and closing preview for polygon."""
-        logger.debug(f"FlowCanvas._draw_polygon_progress: vertices={len(self._polygon_vertices)}")
-        current_mouse = kwargs.get('current_mouse')
-        if not current_mouse and args:
-            current_mouse = args[0]
-
-        self._clear_polygon_progress()
-
-        if len(self._polygon_vertices) < 1:
+    def _on_controller_geometry_changed(self, sample_id: str, gate_id: str) -> None:
+        """Update a specific gate overlay when its geometry changes elsewhere."""
+        if sample_id != self._sample_id:
             return
+        
+        logger.debug(f"FlowCanvas: Handling geometry change for {gate_id}")
+        self.update_gate_overlays()
 
-        xs = [v[0] for v in self._polygon_vertices]
-        ys = [v[1] for v in self._polygon_vertices]
+    def _on_controller_selected(self, sample_id: str, node_id: str) -> None:
+        """Update selection highlight when changed globally."""
+        if sample_id != self._sample_id:
+            return
+        
+        self._selected_gate_id = node_id if node_id else None
+        self.gate_selected.emit(self._selected_gate_id)
+        self._render_gate_layer()
 
-        # ── Live preview line ──────────────────────────────────────────
-        # From the last placed vertex to the current mouse position
-        if current_mouse is not None and len(self._polygon_vertices) >= 1:
-            x_m, y_m = current_mouse
-            x_last, y_last = self._polygon_vertices[-1]
-            preview_line, = self._ax.plot(
-                [x_last, x_m], [y_last, y_m], ":",
-                color=_GATE_EDGE_COLOR,
-                linewidth=1.0,
-                alpha=0.6,
-                zorder=5000,
-            )
-            self._polygon_marker_lines.append(preview_line)
+    def _on_controller_gate_removed(self, sample_id: str, node_id: str) -> None:
+        if sample_id == self._sample_id:
+            self.refresh_gates()
 
-        # Vertex markers & connecting lines (Clean, professional look)
-        line, = self._ax.plot(
-            xs, ys, "o-",  # Circle markers and solid lines
-            color=_GATE_EDGE_COLOR,
-            markersize=4,
-            linewidth=1.0,
-            alpha=0.8,
-            zorder=9999,
-        )
-        self._polygon_marker_lines.append(line)
+    def _on_controller_gate_renamed(self, sample_id: str, node_id: str) -> None:
+        if sample_id == self._sample_id:
+            self._render_gate_layer()
 
-        # ── Closing preview line ──────────────────────────────────────
-        # Last vertex → first vertex (dashed)
-        if len(self._polygon_vertices) >= 3:
-            close_line, = self._ax.plot(
-                [xs[-1], xs[0]], [ys[-1], ys[0]], "--",
-                color=_GATE_EDGE_COLOR,
-                linewidth=0.8,
-                alpha=0.4,
-                zorder=5000,
-            )
-            self._polygon_marker_lines.append(close_line)
+    def refresh_gates(self) -> None:
+        """Fetch the latest gates from the controller and re-render."""
+        if self._controller and self._sample_id:
+            # Note: parent_node_id could be passed if we want to support nested gating view
+            # For now, we assume root-level display or that the controller knows the context.
+            gates, nodes = self._controller.get_gates_for_display(self._sample_id)
+            self.set_gates(gates, nodes)
+        else:
+            self._render_gate_layer()
 
-        # ── Publish partial polygon for Group Preview ──────────────────
-        if len(self._polygon_vertices) >= 2:
-            from ...analysis.gating import PolygonGate
-            from ...analysis.event_bus import Event, EventType
-            
-            # Map vertices back to data space for the preview gate
-            raw_verts = [self._coordinate_mapper.untransform_point(v[0], v[1]) 
-                         for v in self._polygon_vertices]
-            temp_gate = PolygonGate(
-                self._x_param, self._y_param,
-                vertices=raw_verts
-            )
-            self._state.event_bus.publish(Event(
-                EventType.GATE_PREVIEW,
-                data={"gate": temp_gate, "sample_id": getattr(self, '_sample_id', None)},
-                source="flow_canvas"
-            ))
-
-        # Update instruction with vertex count
-        n_pts = len(self._polygon_vertices)
-        hint = f"{n_pts} point{'s' if n_pts != 1 else ''} — double-click to close"
-        if n_pts < 3:
-            hint = f"{n_pts} point{'s' if n_pts != 1 else ''} — need at least 3"
-        self._update_instruction(hint)
-
-        self.draw() # Force immediate update for interactive feedback
-        self.draw_idle() # Ensure internal buffers are clean
-
-    def _clear_polygon_progress(self) -> None:
-        """Remove polygon progress markers."""
-        for artist in self._polygon_marker_lines:
-            try:
-                artist.remove()
-            except (ValueError, AttributeError, NotImplementedError):
-                pass
-        self._polygon_marker_lines.clear()
-        if self._closing_line is not None:
-            try:
-                self._closing_line.remove()
-            except (ValueError, AttributeError, NotImplementedError):
-                pass
-            self._closing_line = None
+    def update_gate_overlays(self) -> None:
+        """Backward-compatible alias for refreshing and re-rendering gates."""
+        self.refresh_gates()
 
     def _cancel_drawing(self) -> None:
-        """Cancel any in-progress drawing operation."""
-        self._is_drawing = False
-        self._drag_start = None
-        self._polygon_vertices.clear()
-        self._clear_rubber_band()
-        self._clear_polygon_progress()
+        """Cancel the active drawing operation."""
+        self._fsm.cancel()
         self._hide_instruction()
 
     def _clear_drawing_state(self) -> None:
@@ -1532,10 +876,4 @@ class FlowCanvas(FigureCanvasQTAgg):
 
     def _clear_previews(self) -> None:
         """Clear temporary gate previews across all views."""
-        from ...analysis.event_bus import Event, EventType
-        if self._state and self._state.event_bus:
-            self._state.event_bus.publish(Event(
-                EventType.GATE_PREVIEW,
-                data={"gate": None},
-                source="flow_canvas"
-            ))
+        CentralEventBus.publish(events.GATE_PREVIEW, {"gate": None})

@@ -34,8 +34,17 @@ from .gating import (
     gate_from_dict,
 )
 from .statistics import compute_statistic, StatType
+from .statistics_analysis import StatisticsAnalysis
 from .state import FlowState
-from .event_bus import Event, EventType
+from biopro.sdk.core.events import CentralEventBus
+from . import events
+from biopro.core.task_scheduler import task_scheduler
+
+from .services.naming import NamingService
+from .services.splitter import PopulationSplitter
+from .services.modifier import GateModifier
+from .services.gating_service import GatingService
+from .services.stats_service import StatsService
 
 logger = logging.getLogger(__name__)
 
@@ -60,38 +69,22 @@ class GateController(QObject):
     gate_added = pyqtSignal(str, str)        # sample_id, node_id
     gate_removed = pyqtSignal(str, str)      # sample_id, node_id
     gate_renamed = pyqtSignal(str, str)      # sample_id, node_id
+    gate_selected = pyqtSignal(str, str)     # sample_id, node_id (can be empty)
+    gate_geometry_changed = pyqtSignal(str, str)  # sample_id, gate_id
     gate_stats_updated = pyqtSignal(str, str)  # sample_id, node_id
     all_stats_updated = pyqtSignal(str)      # sample_id
     propagation_requested = pyqtSignal(str, str)  # gate_id, source_sample_id
 
-    def __init__(self, state: FlowState, parent=None) -> None:
+    def __init__(self, state: FlowState, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._state = state
+        self.sync_stats = False
 
     # ── Gate lifecycle ────────────────────────────────────────────────
 
     def generate_unique_name(self, sample_id: str, prefix: str = "Gate") -> str:
         """Generate a name that doesn't collide with existing gates in this sample."""
-        sample = self._state.experiment.samples.get(sample_id)
-        if sample is None:
-            return f"{prefix} 1"
-
-        existing_names = set()
-
-        def _collect(node: GateNode):
-            if not node.is_root:
-                existing_names.add(node.name)
-            for child in node.children:
-                _collect(child)
-
-        _collect(sample.gate_tree)
-
-        counter = 1
-        while True:
-            candidate = f"{prefix} {counter}"
-            if candidate not in existing_names:
-                return candidate
-            counter += 1
+        return NamingService.generate_unique_name(self._state.experiment, sample_id, prefix)
 
     def add_gate(
         self,
@@ -128,27 +121,18 @@ class GateController(QObject):
             return None
 
         # Compute initial statistics (recursively for Quadrants)
-        def _stats_recursive(n: GateNode):
-            self._compute_node_stats(n, sample)
-            self.gate_stats_updated.emit(sample_id, n.node_id)
-            for child in n.children:
-                _stats_recursive(child)
-        
-        _stats_recursive(child_node)
+        # Recompute stats in the background
+        self.recompute_all_stats(sample_id)
 
         self.gate_added.emit(sample_id, child_node.node_id)
 
-        # Publish to EventBus
-        self._state.event_bus.publish(Event(
-            type=EventType.GATE_CREATED,
-            data={
-                "sample_id": sample_id,
-                "node_id": child_node.node_id,
-                "gate_id": gate.gate_id,
-                "name": child_node.name
-            },
-            source="GateController"
-        ))
+        # Publish to SDK CentralEventBus
+        CentralEventBus.publish(events.GATE_CREATED, {
+            "sample_id": sample_id,
+            "node_id": child_node.node_id,
+            "gate_id": gate.gate_id,
+            "name": child_node.name
+        })
 
         # Request propagation to other samples
         self.propagation_requested.emit(gate.gate_id, sample_id)
@@ -159,110 +143,73 @@ class GateController(QObject):
             sample.display_name,
             type(gate).__name__,
         )
+        
+        # Auto-select the new gate
+        self.select_gate(sample_id, child_node.node_id)
+        
         return child_node.node_id
 
 
     def modify_gate(
-        self, gate_id: str, sample_id: str, **kwargs
+        self, gate_id: str, sample_id: str, **kwargs: Any
     ) -> bool:
-        """Modify a gate's physical parameters and recompute ALL sharing populations.
+        """Modify a gate's physical parameters and recompute ALL sharing populations."""
+        success = GateModifier.modify_gate(self._state.experiment, gate_id, sample_id, **kwargs)
+        if not success:
+            return False
 
-        Args:
-            gate_id:   The physical gate geometry to modify.
-            sample_id: The sample owning the gate.
-            **kwargs:  Gate attributes to update (e.g., x_min=100, negated=True).
-                       Note: 'negated' now targets the primary node if passed here,
-                       for backward compatibility or direct access.
-        """
+        # Recompute stats in the background for all affected nodes
+        self.recompute_all_stats(sample_id)
+        
+        # Find all nodes that share this gate geometry to emit signals
         sample = self._state.experiment.samples.get(sample_id)
-        if sample is None:
-            return False
+        if sample:
+            nodes = sample.gate_tree.find_nodes_by_gate(gate_id)
+            for node in nodes:
+                self.gate_stats_updated.emit(sample_id, node.node_id)
 
-        # Find all nodes that share this gate geometry
-        nodes = sample.gate_tree.find_nodes_by_gate(gate_id)
-        if not nodes:
-            return False
+        # Publish to SDK CentralEventBus
+        CentralEventBus.publish(events.GATE_MODIFIED, {
+            "sample_id": sample_id,
+            "gate_id": gate_id,
+        })
 
-        gate = nodes[0].gate
-        
-        # Identity-level changes (negated) only apply if we want them to,
-        # but usually modify_gate is for geometry.
-        # We'll support 'negated' here by applying it to ALL nodes sharing the gate
-        # for now, but in future 'modify_population' will be preferred.
-        node_kwargs = {}
-        if "negated" in kwargs:
-            node_kwargs["negated"] = kwargs.pop("negated")
-
-        # Update geometry
-        for key, value in kwargs.items():
-            if hasattr(gate, key):
-                setattr(gate, key, value)
-        
-        # Update identity for all linked nodes
-        for node in nodes:
-            for key, value in node_kwargs.items():
-                setattr(node, key, value)
-            
-            # Recompute this gate and all descendants
-            self._recompute_subtree(node, sample)
-            self.gate_stats_updated.emit(sample_id, node.node_id)
-
-        # Publish to EventBus
-        self._state.event_bus.publish(Event(
-            type=EventType.GATE_MODIFIED,
-            data={
-                "sample_id": sample_id,
-                "gate_id": gate_id,
-            },
-            source="GateController"
-        ))
-
+        self.gate_geometry_changed.emit(sample_id, gate_id)
         self.propagation_requested.emit(gate_id, sample_id)
         return True
 
     def split_population(self, sample_id: str, node_id: str) -> Optional[str]:
-        """Create a sibling population that is the inverse of the target node.
-
-        Allows a single gate to drive two populations (Inside/Outside).
-        """
-        sample = self._state.experiment.samples.get(sample_id)
-        if sample is None:
+        """Create a sibling population that is the inverse of the target node."""
+        result = PopulationSplitter.split_population(self._state.experiment, sample_id, node_id)
+        if result is None:
             return None
 
-        node = sample.gate_tree.find_node_by_id(node_id)
-        if node is None or node.gate is None or node.parent is None:
-            return None
+        new_node_id, new_name, gate_id = result
 
-        # Create sibling using the same gate instance
-        new_name = f"{node.name} (Outside)" if not node.negated else f"{node.name} (Inside)"
-        sibling = node.parent.add_child(node.gate, name=new_name)
-        sibling.negated = not node.negated
+        # Compute stats in the background
+        self.recompute_all_stats(sample_id)
 
-        # Compute stats
-        self._recompute_subtree(sibling, sample)
-
-        self.gate_added.emit(sample_id, sibling.node_id)
-        self.gate_stats_updated.emit(sample_id, sibling.node_id)
+        self.gate_added.emit(sample_id, new_node_id)
+        self.gate_stats_updated.emit(sample_id, new_node_id)
         
-        # Publish to EventBus
-        self._state.event_bus.publish(Event(
-            type=EventType.GATE_CREATED,
-            data={
-                "sample_id": sample_id,
-                "node_id": sibling.node_id,
-                "gate_id": node.gate.gate_id,
-                "name": sibling.name,
-                "is_split": True
-            },
-            source="GateController"
-        ))
+        # Publish to SDK CentralEventBus
+        CentralEventBus.publish(events.GATE_CREATED, {
+            "sample_id": sample_id,
+            "node_id": new_node_id,
+            "gate_id": gate_id,
+            "name": new_name,
+            "is_split": True
+        })
         
-        logger.info("Split population created: '%s' from '%s'", sibling.name, node.name)
-        return sibling.node_id
+        logger.info("Split population created: '%s'", new_name)
+        return new_node_id
 
     def remove_population(self, sample_id: str, node_id: str) -> bool:
-        """Remove a population node from a sample's tree."""
-        # Find the node first to get its gate_id for the event
+        """Remove a population from a sample's tree."""
+        sample = self._state.experiment.samples.get(sample_id)
+        if sample is None:
+            return False
+            
         node = self._state.population_service.find_node(sample_id, node_id)
         if node is None:
             return False
@@ -276,16 +223,12 @@ class GateController(QObject):
 
         self.gate_removed.emit(sample_id, node_id)
         
-        # Publish to EventBus
-        self._state.event_bus.publish(Event(
-            type=EventType.GATE_DELETED,
-            data={
-                "sample_id": sample_id,
-                "node_id": node_id,
-                "gate_id": old_gate_id
-            },
-            source="GateController"
-        ))
+        # Publish to SDK CentralEventBus
+        CentralEventBus.publish(events.GATE_DELETED, {
+            "sample_id": sample_id,
+            "node_id": node_id,
+            "gate_id": old_gate_id
+        })
         logger.info("Population %s removed from sample %s.", node_id, sample_id)
         return True
 
@@ -309,16 +252,12 @@ class GateController(QObject):
         self.gate_renamed.emit(sample_id, node_id)
         self.gate_stats_updated.emit(sample_id, node_id)
         
-        # Publish to EventBus
-        self._state.event_bus.publish(Event(
-            type=EventType.GATE_RENAMED,
-            data={
-                "sample_id": sample_id,
-                "node_id": node_id,
-                "new_name": new_name
-            },
-            source="GateController"
-        ))
+        # Publish to SDK CentralEventBus
+        CentralEventBus.publish(events.GATE_RENAMED, {
+            "sample_id": sample_id,
+            "node_id": node_id,
+            "new_name": new_name
+        })
         
         # Always trigger propagation on rename to ensure names persist across samples.
         # Find the root gate in this node's ancestry chain.
@@ -328,19 +267,7 @@ class GateController(QObject):
         return True
 
     def _find_root_gate_id(self, node: GateNode) -> Optional[str]:
-        """Find the nearest gate in the node's ancestry chain.
-        
-        Traverses up from the given node to find the first ancestor
-        that has a gate. This ensures we propagate the minimal affected
-        subtree when a population name changes.
-        
-        Args:
-            node: The GateNode to start from.
-            
-        Returns:
-            The gate_id of the nearest ancestor gate, or None if no
-            gate is found in the chain (only for root node).
-        """
+        """Find the nearest gate in the node's ancestry chain."""
         current = node
         while current is not None:
             if current.gate is not None:
@@ -348,233 +275,117 @@ class GateController(QObject):
             current = current.parent
         return None
 
+    # ── Selection management ──────────────────────────────────────────
+
+    def select_gate(self, sample_id: str, node_id: Optional[str]) -> None:
+        """Update the selected gate and notify listeners.
+        
+        Args:
+            sample_id: The sample context.
+            node_id:   The population node to select (None to deselect).
+        """
+        old_id = self._state.view.current_gate_id
+        if old_id == node_id:
+            return
+
+        self._state.view.current_gate_id = node_id
+        self.gate_selected.emit(sample_id, node_id or "")
+        
+        # Publish to SDK CentralEventBus
+        CentralEventBus.publish(events.GATE_SELECTED, {
+            "sample_id": sample_id,
+            "node_id": node_id
+        })
+        
+        logger.debug(f"Selection changed: {old_id} -> {node_id}")
+
     # ── Copy / propagate helpers ──────────────────────────────────────
 
     def copy_gates_to_group(self, source_sample_id: str) -> int:
-        """Copy the gate tree from one sample to all others in its groups.
-
-        Args:
-            source_sample_id: The sample whose gates to copy.
-
-        Returns:
-            Number of target samples that received the gate tree.
-        """
+        """Copy the gate tree from one sample to all others in its groups."""
+        count = GatingService.copy_gates_to_group(self._state.experiment, source_sample_id)
+        
+        # We still need to trigger stats recomputation on the controller for all targets
         source = self._state.experiment.samples.get(source_sample_id)
-        if source is None:
-            return 0
+        if source:
+            for target_id in self._get_target_sample_ids(source_sample_id):
+                self.recompute_all_stats(target_id)
 
-        # Find all samples in the same groups
-        targets: list[Sample] = []
-        for group in self._state.experiment.groups.values():
+        logger.info("Copied gate tree from source to %d samples.", count)
+        return count
+
+    def _get_target_sample_ids(self, source_sample_id: str) -> list[str]:
+        """Helper to find target sample IDs for propagation."""
+        experiment = self._state.experiment
+        targets = set()
+        for group in experiment.groups.values():
             if source_sample_id in group.sample_ids:
                 for sid in group.sample_ids:
                     if sid != source_sample_id:
-                        s = self._state.experiment.samples.get(sid)
-                        if s and s.fcs_data:
-                            targets.append(s)
-
-        # If not in any group, copy to all other samples
+                        targets.add(sid)
         if not targets:
-            targets = [
-                s for s in self._state.experiment.samples.values()
-                if s.sample_id != source_sample_id and s.fcs_data
-            ]
+            for sid in experiment.samples:
+                if sid != source_sample_id:
+                    targets.add(sid)
+        return list(targets)
 
-        count = 0
-        for target in targets:
-            self._clone_gate_tree(source.gate_tree, target)
-            self.recompute_all_stats(target.sample_id)
-            count += 1
 
-        logger.info(
-            "Copied gate tree from '%s' to %d samples.",
-            source.display_name, count,
+    def recompute_all_stats(self, sample_id: str, sync: bool = False) -> None:
+        """Submit a background task to recompute all gate statistics for a sample."""
+        sync = sync or self.sync_stats
+        
+        if sync:
+            analyzer = StatisticsAnalysis()
+            analyzer.target_sample_id = sample_id
+            results = analyzer.run(self._state)
+            self._on_stats_finished(results)
+            return
+
+        task_id = StatsService.recompute_all_stats(
+            self._state, sample_id, self._on_stats_finished
         )
-        return count
+        if task_id:
+            logger.info(f"Submitted StatisticsAnalysis for sample {sample_id} (task_id: {task_id})")
 
-    def _clone_gate_tree(
-        self, source_root: GateNode, target: Sample
-    ) -> None:
-        """Deep-clone a gate tree onto a target sample."""
-        # Clear existing gates on target
-        target.gate_tree = GateNode()
+    def _on_stats_finished(self, results: dict) -> None:
+        """Apply background statistics results to the live state on the UI thread."""
+        sample_id = results.get("sample_id")
+        stats_map = results.get("stats", {})
+        
+        if not sample_id:
+            return
 
-        # Recursively clone
-        self._clone_children(source_root, target.gate_tree)
-
-    def _clone_children(
-        self, source: GateNode, target_parent: GateNode
-    ) -> None:
-        """Recursively clone gate children."""
-        import copy
-
-        for child in source.children:
-            if child.gate is None:
-                continue
-
-            # Deep-copy the gate with a new ID to keep it independent
-            cloned_gate_dict = child.gate.to_dict()
-            cloned_gate_dict["gate_id"] = None  # force new ID
-            cloned_gate = gate_from_dict(cloned_gate_dict)
-
-            cloned_node = target_parent.add_child(cloned_gate, name=child.name)
-            cloned_node.negated = child.negated
-            self._clone_children(child, cloned_node)
-
-    # ── Statistics computation ────────────────────────────────────────
-
-    def recompute_all_stats(self, sample_id: str) -> None:
-        """Recompute all gate statistics for a sample.
-
-        Args:
-            sample_id: The sample to recompute.
-        """
         sample = self._state.experiment.samples.get(sample_id)
-        if sample is None or sample.fcs_data is None:
+        if not sample:
             return
 
-        events = sample.fcs_data.events
-        if events is None:
-            return
+        # Apply results to nodes
+        for node_id, stats in stats_map.items():
+            node = sample.gate_tree.find_node_by_id(node_id)
+            if node:
+                node.statistics = stats
+                # Notify individual gate subscribers
+                self.gate_stats_updated.emit(sample_id, node_id)
+                # Publish to global bus
+                CentralEventBus.publish(events.STATS_COMPUTED, {
+                    "sample_id": sample_id,
+                    "node_id": node_id,
+                    "stats": stats
+                })
 
-        total_count = len(events)
-
-        # Walk the tree depth-first
-        self._walk_and_compute(
-            sample.gate_tree, events, total_count, total_count
-        )
-
+        # Notify that all stats for this sample are done
         self.all_stats_updated.emit(sample_id)
+        logger.info(f"Applied background stats for sample {sample_id}")
 
-    def _walk_and_compute(
-        self,
-        node: GateNode,
-        parent_events: pd.DataFrame,
-        parent_count: int,
-        total_count: int,
-    ) -> None:
-        """Recursively compute stats for all nodes under ``node``."""
-        for child in node.children:
-            if child.gate is None:
-                continue
-
-            try:
-                # Use hierarchy logic which respects node-level negation
-                mask = child.gate.contains(parent_events)
-                if child.negated:
-                    mask = ~mask
-                gated_events = parent_events.loc[mask].copy()
-            except (KeyError, ValueError) as exc:
-                logger.warning(
-                    "Gate '%s' failed: %s. Skipping.", child.name, exc
-                )
-                child.statistics = {"count": 0, "pct_parent": 0.0, "pct_total": 0.0}
-                continue
-
-            count = len(gated_events)
-            pct_parent = (count / parent_count * 100.0) if parent_count > 0 else 0.0
-            pct_total = (count / total_count * 100.0) if total_count > 0 else 0.0
-
-            child.statistics = {
-                "count": count,
-                "pct_parent": round(pct_parent, 2),
-                "pct_total": round(pct_total, 2),
-            }
-
-            # Recurse into child gates
-            self._walk_and_compute(
-                child, gated_events, count, total_count
-            )
-
-    def _compute_node_stats(
-        self, node: GateNode, sample: Sample
-    ) -> None:
-        """Compute statistics for a single gate node.
-
-        Uses the full hierarchy to get the parent subset first.
-        """
-        if sample.fcs_data is None or sample.fcs_data.events is None:
-            return
-
-        events = sample.fcs_data.events
-        total_count = len(events)
-
-        # Get the parent's subset
-        if node.parent and node.parent.gate is not None:
-            parent_events = node.parent.apply_hierarchy(events)
-        else:
-            parent_events = events
-
-        parent_count = len(parent_events)
-
-        try:
-            mask = node.gate.contains(parent_events)
-            if node.negated:
-                mask = ~mask
-            gated_events = parent_events.loc[mask].copy()
-        except (KeyError, ValueError) as exc:
-            logger.warning("Gate stats failed: %s", exc)
-            node.statistics = {"count": 0, "pct_parent": 0.0, "pct_total": 0.0}
-            return
-
-        count = len(gated_events)
-        pct_parent = (count / parent_count * 100.0) if parent_count > 0 else 0.0
-        pct_total = (count / total_count * 100.0) if total_count > 0 else 0.0
-
-        node.statistics = {
-            "count": count,
-            "pct_parent": round(pct_parent, 2),
-            "pct_total": round(pct_total, 2),
-        }
-
-    def _recompute_subtree(
-        self, node: GateNode, sample: Sample
-    ) -> None:
-        """Recompute stats for a node and all its descendants."""
-        self._compute_node_stats(node, sample)
-
-        if sample.fcs_data is None or sample.fcs_data.events is None:
-            return
-
-        events = sample.fcs_data.events
-        total_count = len(events)
-        gated = node.apply_hierarchy(events)
-
-        self._walk_and_compute(node, gated, len(gated), total_count)
+    # Legacy synchronous stats methods removed in favor of background StatisticsAnalysis
 
     # ── Gate query helpers ────────────────────────────────────────────
 
     def get_gates_for_display(
         self, sample_id: str, parent_node_id: Optional[str] = None
     ) -> tuple[list[Gate], list[GateNode]]:
-        """Return the gates (and nodes) that should be drawn on the canvas.
-
-        When viewing a population (parent_node_id), returns the direct
-        child gates of that population.
-
-        Args:
-            sample_id:      The active sample.
-            parent_node_id: The parent gate (None for root).
-
-        Returns:
-            Tuple of (gates, gate_nodes).
-        """
+        """Return the gates (and nodes) that should be drawn on the canvas."""
         sample = self._state.experiment.samples.get(sample_id)
         if sample is None:
             return ([], [])
-
-        if parent_node_id:
-            parent = sample.gate_tree.find_node_by_id(parent_node_id)
-            if parent is None:
-                return ([], [])
-        else:
-            parent = sample.gate_tree
-
-        gates = []
-        nodes = []
-        for child in parent.children:
-            if child.gate is not None:
-                gates.append(child.gate)
-                nodes.append(child)
-
-        return (gates, nodes)
+        return GatingService.get_gates_for_display(sample, parent_node_id)

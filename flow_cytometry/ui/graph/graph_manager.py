@@ -27,7 +27,8 @@ from biopro.ui.theme import Colors, Fonts
 
 from .graph_window import GraphWindow
 from ...analysis.state import FlowState
-from ...analysis.event_bus import Event, EventType
+from biopro.sdk.core.events import CentralEventBus
+from ...analysis import events
 from ...analysis.gating import Gate, GateNode
 
 logger = logging.getLogger(__name__)
@@ -50,23 +51,33 @@ class GraphManager(QWidget):
     gate_drawn = pyqtSignal(object, str, object)  # Gate, sample_id, parent_node_id
     gate_selection_changed = pyqtSignal(object)    # gate_id or None
 
-    def __init__(self, state: FlowState, parent=None) -> None:
+    def __init__(self, state: FlowState, controller: Optional[GateController] = None, parent=None) -> None:
         super().__init__(parent)
         self._state = state
+        self._controller = controller or self._resolve_controller()
         self._graphs: dict[str, GraphWindow] = {}   # key: "sample_id:gate_id"
         self._current_tool = "select"
         self._setup_ui()
         self._setup_events()
 
+    def _resolve_controller(self) -> Optional[GateController]:
+        """Try to find the controller in parents."""
+        curr = self.parent()
+        while curr:
+            if hasattr(curr, "_gate_controller"):
+                return curr._gate_controller
+            curr = curr.parent()
+        return None
+
     def _setup_events(self) -> None:
         """Subscribe to relevant state events."""
-        self._state.event_bus.subscribe(EventType.GATE_RENAMED, self._on_bus_event)
+        CentralEventBus.subscribe(events.GATE_RENAMED, self._on_bus_event)
 
-    def _on_bus_event(self, event: Event) -> None:
+    def _on_bus_event(self, topic: str, data: dict) -> None:
         """Handle incoming bus events."""
-        if event.type == EventType.GATE_RENAMED:
+        if topic == events.GATE_RENAMED:
             # Refresh all tab labels for the given sample
-            sample_id = event.data.get("sample_id")
+            sample_id = data.get("sample_id")
             for i in range(self._tabs.count()):
                 graph = self._tabs.widget(i)
                 if isinstance(graph, GraphWindow) and graph.sample_id == sample_id:
@@ -196,7 +207,7 @@ class GraphManager(QWidget):
             logger.warning("Cannot open graph — sample %s not found", sample_id)
             return
 
-        graph = GraphWindow(self._state, sample_id, node_id)
+        graph = GraphWindow(self._state, sample_id, node_id, controller=self._controller)
         self._graphs[key] = graph
 
         # Apply current tool

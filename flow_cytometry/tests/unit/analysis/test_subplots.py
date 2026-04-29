@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
 import pandas as pd
-from flow_cytometry.analysis.render_task import RenderTask
+from flow_cytometry.ui.graph.render_task import RenderTask
 from flow_cytometry.analysis.scaling import AxisScale
 from flow_cytometry.analysis.transforms import TransformType
 

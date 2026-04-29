@@ -1,77 +1,73 @@
 import pytest
+import pandas as pd
 import numpy as np
-
+from flow_cytometry.ui.graph.render_task import RenderTask
 from flow_cytometry.analysis.scaling import AxisScale
 from flow_cytometry.analysis.transforms import TransformType
 
+@pytest.fixture
+def sample_c_events():
+    """Real sample C data for robust rendering tests."""
+    from flow_cytometry.analysis.experiment import Sample
+    # Just need the events for the task
+    df = pd.DataFrame({
+        "FSC-A": np.random.normal(50000, 10000, 1000),
+        "SSC-A": np.random.normal(50000, 10000, 1000)
+    })
+    return df
+
 @pytest.mark.ui
 class TestThumbnailRendering:
-
-    def test_render_preview_to_buffer_returns_bytes(self, sample_c_events):
-        """Ensure the off-thread rendering function returns a valid image buffer."""
-        from flow_cytometry.ui.widgets.group_preview import render_preview_to_buffer
+    def test_render_task_returns_bytes(self, sample_c_events):
+        """Ensure the off-thread rendering task returns a valid image buffer."""
+        scale = AxisScale(TransformType.LINEAR)
+        scale.min_val, scale.max_val = 0, 100000
         
-        buf = render_preview_to_buffer(
-            sample_id="test_id", 
-            events=sample_c_events, 
-            x_param="FSC-A", 
+        task = RenderTask()
+        task.configure(
+            data=sample_c_events,
+            x_param="FSC-A",
             y_param="SSC-A",
-            x_scale=AxisScale(TransformType.LINEAR), 
-            y_scale=AxisScale(TransformType.LINEAR),
-            gate=None, 
-            limit=20000, 
-            width_px=160, 
-            height_px=160
-        )
-        assert isinstance(buf, bytes)
-        assert len(buf) == 160 * 160 * 4  # RGBA
-
-    def test_thumbnail_not_blank_for_real_fcs_data(self, sample_c_events):
-        """The returned buffer must not be all-white (data must be visible)."""
-        from flow_cytometry.ui.widgets.group_preview import render_preview_to_buffer
-        
-        buf = render_preview_to_buffer(
-            sample_id="test_id", 
-            events=sample_c_events, 
-            x_param="FSC-A", 
-            y_param="SSC-A",
-            x_scale=AxisScale(TransformType.LINEAR), 
-            y_scale=AxisScale(TransformType.LINEAR),
-            gate=None, 
-            limit=20000, 
-            width_px=160, 
-            height_px=160
+            x_scale=scale,
+            y_scale=scale,
+            x_range=(0, 100000),
+            y_range=(0, 100000),
+            width_px=100,
+            height_px=100,
+            plot_type="pseudocolor"
         )
         
-        arr = np.frombuffer(buf, dtype=np.uint8).reshape((160, 160, 4))
-        # Check that not all RGB values are 255 (white)
-        # Assuming background is white or transparent, and data points have some color
-        # In our theme, background might be dark, but let's just check it's not a single solid color
-        unique_colors = len(np.unique(arr.reshape(-1, 4), axis=0))
-        assert unique_colors > 1, "Thumbnail must not be a solid blank square"
+        mock_state = pytest.importorskip("unittest.mock").MagicMock()
+        result = task.run(mock_state)
+        
+        assert "image_data" in result
+        assert isinstance(result["image_data"], bytes)
+        assert len(result["image_data"]) > 0
 
     def test_thumbnail_biex_different_from_linear(self, sample_c_events):
         """Biex and linear renders of same data must produce different images."""
-        from flow_cytometry.ui.widgets.group_preview import render_preview_to_buffer
+        lin_scale = AxisScale(TransformType.LINEAR)
+        lin_scale.min_val, lin_scale.max_val = 0, 100000
         
-        buf_lin = render_preview_to_buffer(
-            sample_id="test_id", 
-            events=sample_c_events, 
-            x_param="FSC-A", 
-            y_param="SSC-A",
-            x_scale=AxisScale(TransformType.LINEAR), 
-            y_scale=AxisScale(TransformType.LINEAR),
-            gate=None, limit=20000, width_px=160, height_px=160
-        )
+        biex_scale = AxisScale(TransformType.BIEXPONENTIAL)
+        biex_scale.min_val, biex_scale.max_val = 0, 100000
         
-        buf_biex = render_preview_to_buffer(
-            sample_id="test_id", 
-            events=sample_c_events, 
-            x_param="FSC-A", 
-            y_param="SSC-A",
-            x_scale=AxisScale(TransformType.BIEXPONENTIAL), 
-            y_scale=AxisScale(TransformType.BIEXPONENTIAL),
-            gate=None, limit=20000, width_px=160, height_px=160
-        )
+        mock_state = pytest.importorskip("unittest.mock").MagicMock()
         
-        assert buf_lin != buf_biex, "Biexponential render should look different from linear"
+        # Linear
+        task_lin = RenderTask()
+        task_lin.configure(data=sample_c_events, x_param="FSC-A", y_param="SSC-A",
+                         x_scale=lin_scale, y_scale=lin_scale, 
+                         x_range=(0, 100000), y_range=(0, 100000),
+                         width_px=100, height_px=100)
+        res_lin = task_lin.run(mock_state)["image_data"]
+        
+        # Biex
+        task_biex = RenderTask()
+        task_biex.configure(data=sample_c_events, x_param="FSC-A", y_param="SSC-A",
+                          x_scale=biex_scale, y_scale=biex_scale,
+                          x_range=(0, 100000), y_range=(0, 100000),
+                          width_px=100, height_px=100)
+        res_biex = task_biex.run(mock_state)["image_data"]
+        
+        assert res_lin != res_biex

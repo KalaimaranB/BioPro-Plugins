@@ -1,34 +1,33 @@
 # Flow Cytometry Module Documentation
 
-Welcome to the documentation suite for the BioPro Flow Cytometry module. This directory contains technical and user-facing guides to help you master high-performance flow cytometry analysis.
+Welcome to the documentation suite for the BioPro Flow Cytometry module. This directory is organized into two primary silos to serve both researchers and software engineers.
 
 ## 📚 Documentation Map
 
-### 📖 User Guides (How to Use)
-1.  **[User Manual](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/01_USER_MANUAL.md)**
-    *   Guided tour of the workspace.
-    *   Step-by-step instructions for data loading, compensation, and gating.
-    *   **New**: High-fidelity rendering and image export.
-2.  **[Flow Cytometry Basics](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/04_FLOW_CYTOMETRY_BASICS.md)**
-    *   Educational guide to the "Cell to Software" pipeline.
+### 📖 User Documentation (For Scientists)
+Targeted at researchers performing data analysis and generating publication-quality figures.
+1.  **[Overview](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/00_OVERVIEW.md)**
+    *   Module capabilities and value proposition.
+2.  **[Getting Started Guide](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/01_GETTING_STARTED.md)**
+    *   Tutorial for loading FCS data, basic navigation, and creating your first gate.
+3.  **[Advanced Analysis Guide](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/02_ANALYSIS_GUIDE.md)**
+    *   In-depth workflows for compensation, hierarchical gating, and high-fidelity rendering.
+4.  **[Scientific Principles](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/03_SCIENTIFIC_LOGIC.md)**
+    *   Educational guide to the "Cell to Software" pipeline and the math behind Logicle transforms.
 
-### 🔬 Scientific Foundation (How it Works)
-1.  **[Technical Reference](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/00_TECHNICAL_REFERENCE.md)**
-    *   Mathematical foundations: Logicle, Compensation, Gating.
-    *   Computational logic: Rendering optimizations, Normalization, Dithering.
-    *   Detailed statistics definitions (MFI, CV, %Parent).
-
-### 🛠️ Developer & Architecture
-1.  **[Module Architecture](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/02_ARCHITECTURE.md)**
-    *   Software design: Internal structure and the `FlowState` model.
-    *   BioPro Core integration protocols.
-2.  **[Testing Guide](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/TESTING_GUIDE.md)**
+### 🛠️ Developer Documentation (For Engineers)
+Targeted at software engineers maintaining, testing, or extending the plugin.
+1.  **[Architecture Overview](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/00_ARCHITECTURE_OVERVIEW.md)**
+    *   Software design, FlowState model, and BioPro core integration.
+2.  **[API Reference](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/01_API_REFERENCE.md)**
+    *   Technical specification of the Gating, Transforms, and Scaling modules.
+3.  **[UI Engine & FSM](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/02_UI_ENGINE.md)**
+    *   Details on the FlowCanvas state machine and asynchronous rendering pipeline.
+4.  **[Testing & QA Guide](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/03_TESTING_AND_QA.md)**
     *   Verification steps and automated test suite details.
 
 ---
 
 ## 🔬 Core References
-
 - **Parks, D.R., et al. (2006)**. A new "Logicle" display method. *Cytometry Part A*.
-- **Roederer, M. (2001)**. Spectral compensation for flow cytometry. *Cytometry*.
 - **FlowKit Documentation**: https://github.com/whitews/FlowKit

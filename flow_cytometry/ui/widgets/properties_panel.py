@@ -34,8 +34,11 @@ from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.state import FlowState
 from ...analysis.experiment import Sample, SampleRole
-from ...analysis.gate_controller import GateController
+from ...analysis.gate_coordinator import GateCoordinator
 from .group_preview import GroupPreviewPanel
+
+from biopro.sdk.core.events import CentralEventBus
+from ...analysis import events
 
 logger = logging.getLogger(__name__)
 
@@ -48,19 +51,21 @@ class PropertiesPanel(QWidget):
     are recomputed.
     """
 
-    def __init__(self, state: FlowState, controller: GateController, parent=None) -> None:
+    def __init__(self, state: FlowState, coordinator: GateCoordinator, parent=None) -> None:
         super().__init__(parent)
         self._state = state
-        self._controller = controller
+        self._coordinator = coordinator
         self._current_sample_id: Optional[str] = None
         self._current_node_id: Optional[str] = None
         self._setup_ui()
         self._setup_events()
 
     def _setup_events(self) -> None:
-        eb = self._state.event_bus
-        from ...analysis.event_bus import EventType
-        eb.subscribe(EventType.AXIS_PARAMS_CHANGED, lambda _: self.refresh())
+        CentralEventBus.subscribe(events.AXIS_PARAMS_CHANGED, lambda _: self.refresh())
+        CentralEventBus.subscribe(events.STATS_COMPUTED, self._on_stats_computed)
+
+    def _on_stats_computed(self, data: dict) -> None:
+        self.refresh_gate_stats(data.get("sample_id"), data.get("node_id"))
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -162,9 +167,13 @@ class PropertiesPanel(QWidget):
 
     def _clear_content(self) -> None:
         """Remove all widgets from the content area."""
+        # Safety check: ensure layout hasn't been deleted during widget teardown
+        if not hasattr(self, "_content_layout") or self._content_layout is None:
+            return
+            
         while self._content_layout.count():
             child = self._content_layout.takeAt(0)
-            if child.widget():
+            if child and child.widget():
                 child.widget().deleteLater()
 
     def _show_empty(self) -> None:
@@ -295,18 +304,9 @@ class PropertiesPanel(QWidget):
             _add_row("Y Param:", gate.y_param)
         _add_row("Adaptive:", "🧠 Yes" if gate.adaptive else "No")
 
-        # Invert toggle (Node level)
-        negate_cb = QCheckBox("Invert (Select Outside)")
-        negate_cb.setChecked(node.negated)
-        negate_cb.setStyleSheet(f"color: {Colors.FG_PRIMARY}; font-size: {Fonts.SIZE_SMALL}px;")
-        negate_cb.toggled.connect(self._on_negate_toggled)
-        form.addRow("", negate_cb)
+        _add_row("Adaptive:", "🧠 Yes" if gate.adaptive else "No")
 
-        # Separator
-        sep = QLabel("")
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background: {Colors.BORDER}; margin: 4px 0;")
-        form.addRow(sep)
+
 
         # Population statistics — highlighted
         if node.statistics:
@@ -328,33 +328,6 @@ class PropertiesPanel(QWidget):
         form_widget.setLayout(form)
         self._content_layout.addWidget(form_widget)
         
-        # Action Section (Split Button) - outside the form for better visibility
-        actions_layout = QVBoxLayout()
-        actions_layout.setContentsMargins(0, 8, 0, 0)
-        
-        split_btn = QPushButton("⇶ Split Inside/Outside")
-        split_btn.setFixedHeight(32)
-        split_btn.setStyleSheet(f"""
-            QPushButton {{
-                background: {Colors.BG_MEDIUM};
-                color: {Colors.ACCENT_PRIMARY};
-                border: 1px solid {Colors.ACCENT_PRIMARY};
-                border-radius: 6px;
-                font-weight: bold;
-                font-size: 11px;
-            }}
-            QPushButton:hover {{
-                background: {Colors.ACCENT_PRIMARY};
-                color: {Colors.BG_DARKEST};
-            }}
-        """)
-        split_btn.clicked.connect(self._on_split_clicked)
-        actions_layout.addWidget(split_btn)
-        
-        actions_widget = QWidget()
-        actions_widget.setLayout(actions_layout)
-        self._content_layout.addWidget(actions_widget)
-        
         self._content_layout.addStretch()
 
     def set_active_gate(self, node_id: Optional[str]) -> None:
@@ -363,26 +336,11 @@ class PropertiesPanel(QWidget):
 
     def _on_name_changed(self, new_name: str) -> None:
         if self._current_sample_id and self._current_node_id:
-            self._controller.rename_population(
+            self._coordinator.rename_population(
                 self._current_sample_id, self._current_node_id, new_name
             )
 
-    def _on_negate_toggled(self, negated: bool) -> None:
-        """Handle negation toggle at the node level."""
-        if self._current_sample_id and self._current_node_id:
-            sample = self._state.experiment.samples.get(self._current_sample_id)
-            if sample:
-                node = sample.gate_tree.find_node_by_id(self._current_node_id)
-                if node and node.gate:
-                    self._controller.modify_gate(
-                        node.gate.gate_id, self._current_sample_id, negated=negated
-                    )
 
-    def _on_split_clicked(self) -> None:
-        if self._current_sample_id and self._current_node_id:
-            self._controller.split_population(
-                self._current_sample_id, self._current_node_id
-            )
 
     def _count_gates(self, node) -> int:
         """Count total gates in a tree (excluding root)."""

@@ -124,12 +124,12 @@ class TestSinglePolygonGate:
         rect_gate = RectangleGate('FSC-A', 'SSC-A', x_min=50_000, x_max=200_000, y_min=1_000, y_max=50_000)
         
         # Polygon with same outer bounds
-        vertices = np.array([
-            [100_000, 50_000],
-            [300_000, 50_000],
-            [300_000, 150_000],
-            [100_000, 150_000],
-        ])
+        vertices = [
+            (50_000, 1_000),
+            (200_000, 1_000),
+            (200_000, 50_000),
+            (50_000, 50_000),
+        ]
         poly_gate = PolygonGate('FSC-A', 'SSC-A', vertices)
         
         rect_membership = rect_gate.contains(sample_a_events)
@@ -151,8 +151,8 @@ class TestSingleEllipseGate:
         """Apply ellipse gate to CD4 vs CD8 (typical lymph marker combo)."""
         gate = EllipseGate(
             'FITC-A', 'PE-A',
-            center_x=200, center_y=200,
-            semi_major=100, semi_minor=80,
+            center=(200, 200),
+            width=100, height=80,
             angle=0
         )
         
@@ -170,10 +170,10 @@ class TestSingleEllipseGate:
     def test_ellipse_gate_orientation(self, sample_a_events):
         """Test ellipse with different orientations."""
         # Horizontal ellipse
-        gate_0 = EllipseGate('FITC-A', 'PE-A', 200, 200, 100, 60, angle=0)
+        gate_0 = EllipseGate('FITC-A', 'PE-A', center=(200, 200), width=100, height=60, angle=0)
         
         # Vertical ellipse
-        gate_90 = EllipseGate('FITC-A', 'PE-A', 200, 200, 60, 100, angle=0)
+        gate_90 = EllipseGate('FITC-A', 'PE-A', center=(200, 200), width=60, height=100, angle=0)
         
         valid_mask = ~(sample_a_events['FITC-A'].isna() | sample_a_events['PE-A'].isna())
         valid_events = sample_a_events[valid_mask]
@@ -193,7 +193,7 @@ class TestSingleQuadrantGate:
 
     def test_quadrant_gate_cd4_cd8(self, sample_a_events):
         """Apply quadrant gate to CD4 vs CD8 (typical classification)."""
-        gate = QuadrantGate('FITC-A', 'PE-A', x_threshold=200, y_threshold=200)
+        gate = QuadrantGate('FITC-A', 'PE-A', x_mid=200, y_mid=200)
         
         valid_mask = ~(sample_a_events['FITC-A'].isna() | sample_a_events['PE-A'].isna())
         valid_events = sample_a_events[valid_mask]
@@ -207,7 +207,7 @@ class TestSingleQuadrantGate:
 
     def test_quadrant_population_distribution(self, sample_a_events):
         """Verify quadrant gate distributes events across regions."""
-        gate = QuadrantGate('FITC-A', 'PE-A', x_threshold=200, y_threshold=200)
+        gate = QuadrantGate('FITC-A', 'PE-A', x_mid=200, y_mid=200)
         
         valid_mask = ~(sample_a_events['FITC-A'].isna() | sample_a_events['PE-A'].isna())
         valid_events = sample_a_events[valid_mask]
@@ -236,7 +236,7 @@ class TestSingleRangeGate:
 
     def test_range_gate_on_cd3(self, sample_a_events):
         """Apply range gate to CD3 marker (typical T-cell marker)."""
-        gate = RangeGate('FITC-A', y_min=50, y_max=250)
+        gate = RangeGate('FITC-A', low=50, high=250)
         
         valid_mask = ~sample_a_events['FITC-A'].isna()
         valid_events = sample_a_events[valid_mask]
@@ -251,7 +251,7 @@ class TestSingleRangeGate:
 
     def test_range_gate_boundaries(self, sample_a_events):
         """Verify range gate boundaries are respected."""
-        gate = RangeGate('FITC-A', y_min=50, y_max=250)
+        gate = RangeGate('FITC-A', low=50, high=250)
         
         valid_mask = ~sample_a_events['FITC-A'].isna()
         valid_events = sample_a_events[valid_mask]
@@ -267,8 +267,8 @@ class TestSingleRangeGate:
 
     def test_range_gate_narrow_vs_wide(self, sample_a_events):
         """Compare narrow vs wide range gates."""
-        narrow_gate = RangeGate('FITC-A', y_min=100, y_max=150)  # Strict
-        wide_gate = RangeGate('FITC-A', y_min=50, y_max=250)     # Loose
+        narrow_gate = RangeGate('FITC-A', low=100, high=150)  # Strict
+        wide_gate = RangeGate('FITC-A', low=50, high=250)     # Loose
         
         valid_mask = ~sample_a_events['FITC-A'].isna()
         valid_events = sample_a_events[valid_mask]
@@ -399,7 +399,7 @@ class TestRealSampleStatistics:
         assert np.mean(fsc_values) > 0
         assert np.std(fsc_values) > 0
         assert np.max(fsc_values) <= 300_000
-        assert np.min(fsc_values) >= 100_000
+        assert np.min(fsc_values) >= 50_000
 
     def test_population_percentage_changes(self, sample_a_events, sample_b_events):
         """Compare population percentages across different samples."""

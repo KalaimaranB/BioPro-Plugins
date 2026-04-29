@@ -21,7 +21,8 @@ from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.state import FlowState
 from ...analysis.gating import GateNode
-from ...analysis.event_bus import Event, EventType
+from biopro.sdk.core.events import CentralEventBus
+from ...analysis import events
 
 
 _POPULATION_ICONS = ["◆", "◇", "▸", "▹", "›"]
@@ -51,7 +52,6 @@ class GateHierarchy(QWidget):
     selection_changed = pyqtSignal(str)
     gate_rename_requested = pyqtSignal(str, str, str)
     gate_delete_requested = pyqtSignal(str, str)
-    split_requested = pyqtSignal(str, str) # sample_id, node_id
     copy_gates_requested = pyqtSignal(str)
 
     def __init__(self, state: FlowState, parent=None) -> None:
@@ -66,12 +66,12 @@ class GateHierarchy(QWidget):
 
     def _setup_events(self) -> None:
         """Subscribe to relevant state events."""
-        self._state.event_bus.subscribe(EventType.GATE_CREATED, self._on_event)
-        self._state.event_bus.subscribe(EventType.GATE_RENAMED, self._on_event)
-        self._state.event_bus.subscribe(EventType.GATE_DELETED, self._on_event)
+        CentralEventBus.subscribe(events.GATE_CREATED, self._on_gate_change)
+        CentralEventBus.subscribe(events.GATE_RENAMED, self._on_gate_change)
+        CentralEventBus.subscribe(events.GATE_DELETED, self._on_gate_change)
 
-    def _on_event(self, event: Event) -> None:
-        """Handle incoming bus events."""
+    def _on_gate_change(self, data: dict) -> None:
+        """Handle incoming gate change events."""
         # For simplicity in this phase, any gate change triggers a full refresh.
         # In a high-performance scenario, we'd update only the affected nodes.
         self.refresh()
@@ -263,6 +263,16 @@ class GateHierarchy(QWidget):
         if node is None:
             return
 
+        # Update name (column 0)
+        depth = 0
+        curr = node
+        while curr.parent:
+            depth += 1
+            curr = curr.parent
+        icon = "⊘" if node.negated else _POPULATION_ICONS[min(depth, len(_POPULATION_ICONS) - 1)]
+        item.setText(0, f"{icon} {node.name}")
+
+        # Update stats
         if "count" in node.statistics:
             item.setText(1, f"{int(node.statistics['count']):,}")
         if "pct_parent" in node.statistics:
@@ -349,10 +359,6 @@ class GateHierarchy(QWidget):
         rename_act.triggered.connect(lambda: self._prompt_rename(node_id))
         menu.addAction(rename_act)
 
-        split_act = QAction("⇶  Split (Inside/Outside)", self)
-        split_act.triggered.connect(lambda: self._on_split_requested(node_id))
-        menu.addAction(split_act)
-
         menu.addSeparator()
 
         del_act = QAction("🗑️  Delete Population", self)
@@ -379,7 +385,4 @@ class GateHierarchy(QWidget):
         if ok and new_name and self._active_sample_id:
             self.gate_rename_requested.emit(self._active_sample_id, node_id, new_name)
 
-    def _on_split_requested(self, node_id: str) -> None:
-        """Handle split requested from context menu."""
-        if self._active_sample_id:
-            self.split_requested.emit(self._active_sample_id, node_id)
+

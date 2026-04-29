@@ -32,8 +32,9 @@ from PyQt6.QtWidgets import (
 from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.state import FlowState
-from ...analysis.event_bus import Event, EventType
 from ...analysis.experiment import Sample
+from biopro.sdk.core.events import CentralEventBus
+from ...analysis import events
 from ...analysis.fcs_io import get_channel_marker_label
 from ...analysis.transforms import TransformType
 from ...analysis.scaling import AxisScale, detect_logicle_top, estimate_logicle_params,calculate_auto_range
@@ -81,12 +82,14 @@ class GraphWindow(QWidget):
         state: FlowState,
         sample_id: str,
         node_id: Optional[str] = None,
+        controller: Optional[GateController] = None,
         parent=None,
     ) -> None:
         super().__init__(parent)
         self._state = state
         self._sample_id = sample_id
         self._node_id = node_id
+        self._controller = controller or self._resolve_controller()
         
         self._x_scale = AxisScale(TransformType.LINEAR)
         self._y_scale = AxisScale(TransformType.LINEAR)
@@ -124,15 +127,14 @@ class GraphWindow(QWidget):
 
     def _setup_events(self) -> None:
         """Subscribe to relevant state events."""
-        self._state.event_bus.subscribe(EventType.GATE_RENAMED, self._on_bus_event)
+        CentralEventBus.subscribe(events.GATE_RENAMED, self._on_gate_renamed)
 
-    def _on_bus_event(self, event: Event) -> None:
-        """Handle incoming bus events."""
-        if event.type == EventType.GATE_RENAMED:
-            # Refresh if it's our sample and node
-            if event.data.get("sample_id") == self._sample_id:
-                # We update the breadcrumb even if it's a parent gate that was renamed
-                self._update_breadcrumb()
+    def _on_gate_renamed(self, data: dict) -> None:
+        """Handle incoming gate rename events."""
+        # Refresh if it's our sample and node
+        if data.get("sample_id") == self._sample_id:
+            # We update the breadcrumb even if it's a parent gate that was renamed
+            self._update_breadcrumb()
 
     @property
     def sample_id(self) -> str:
@@ -146,6 +148,15 @@ class GraphWindow(QWidget):
     def canvas(self) -> FlowCanvas:
         """Expose the canvas for external signal wiring."""
         return self._canvas
+
+    def _resolve_controller(self) -> Optional[GateController]:
+        """Try to find the controller in parents."""
+        curr = self.parent()
+        while curr:
+            if hasattr(curr, "_gate_controller"):
+                return curr._gate_controller
+            curr = curr.parent()
+        return None
 
     def _setup_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -234,55 +245,20 @@ class GraphWindow(QWidget):
         self._render_spinner.setVisible(False)
         axis_row.addWidget(self._render_spinner)
         
-        # ── Render Quality Toggle ──
+        # ── Render Settings Button ──
         axis_row.addSpacing(16)
-        self._quality_btn_group = QHBoxLayout()
-        self._quality_btn_group.setSpacing(0)
-        
-        self._btn_opt = QPushButton("Optimized")
-        self._btn_full = QPushButton("Full")
-        
-        for i, btn in enumerate((self._btn_opt, self._btn_full)):
-            btn.setCheckable(True)
-            btn.setFixedHeight(22)
-            btn.setFixedWidth(65)
-            # Rounded corners only on the outer edges
-            radius = "4px"
-            border_radius = f"{radius} 0 0 {radius}" if i == 0 else f"0 {radius} {radius} 0"
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background: {Colors.BG_MEDIUM};
-                    color: {Colors.FG_SECONDARY};
-                    border: 1px solid {Colors.BORDER};
-                    border-radius: {border_radius};
-                    font-size: 10px;
-                    font-weight: 600;
-                }}
-                QPushButton:hover {{
-                    background: {Colors.BG_DARK};
-                }}
-                QPushButton:checked {{
-                    background: {Colors.ACCENT_PRIMARY};
-                    color: {Colors.BG_DARKEST};
-                    border: 1px solid {Colors.ACCENT_PRIMARY};
-                }}
-            """)
-        
-        self._btn_opt.setChecked(self._state.render_quality == "optimized")
-        self._btn_full.setChecked(self._state.render_quality == "transparent")
-        
-        self._btn_opt.clicked.connect(lambda: self._set_render_quality("optimized"))
-        self._btn_full.clicked.connect(lambda: self._set_render_quality("transparent"))
-        
-        self._quality_btn_group.addWidget(self._btn_opt)
-        self._quality_btn_group.addWidget(self._btn_full)
-        axis_row.addLayout(self._quality_btn_group)
+        self._btn_settings = QPushButton("⚙ Settings")
+        self._btn_settings.setFixedHeight(24)
+        self._btn_settings.setToolTip("Customize rendering parameters")
+        self._style_transform_btn(self._btn_settings)
+        self._btn_settings.clicked.connect(self._open_render_settings_dialog)
+        axis_row.addWidget(self._btn_settings)
 
         axis_row.addStretch()
         layout.addLayout(axis_row)
 
         # ── Flow Canvas (the actual matplotlib plot) ──────────────────
-        self._canvas = FlowCanvas(self._state, self)
+        self._canvas = FlowCanvas(self._state, self._controller, self)
         self._canvas.setMinimumSize(400, 400)
         layout.addWidget(self._canvas, stretch=1)
         logger.info(f"GraphWindow._setup_ui: Canvas added to layout, canvas_size={self._canvas.width()}x{self._canvas.height()}")
@@ -406,28 +382,27 @@ class GraphWindow(QWidget):
 
     def _render_initial(self) -> None:
         """Render the initial plot from the sample's data."""
-        logger.info(f"GraphWindow._render_initial: sample={self._sample_id}, node={self._node_id}")
         sample = self._state.experiment.samples.get(self._sample_id)
         if sample is None or sample.fcs_data is None:
             logger.warning(f"GraphWindow._render_initial: Sample {self._sample_id} not found or has no FCS data")
             return
     
-        events = sample.fcs_data.events
-        if events is None:
+        sample_events = sample.fcs_data.events
+        if sample_events is None:
             logger.warning(f"GraphWindow._render_initial: Sample {self._sample_id} has no events")
             return
     
         # Use PopulationService to get the actual subset (respects negations, etc)
-        events = self._state.population_service.get_gated_events(self._sample_id, self._node_id)
-        if events is None:
+        gated_events = self._state.population_service.get_gated_events(self._sample_id, self._node_id)
+        if gated_events is None:
             logger.warning(f"GraphWindow._render_initial: PopulationService returned None for node {self._node_id}")
             return
         
-        logger.info(f"GraphWindow._render_initial: Gated events size = {len(events)}")
+        logger.info(f"GraphWindow._render_initial: Gated events size = {len(gated_events)}")
     
         # Guard against empty gate result
-        if len(events) == 0:
-            self._canvas.set_data(events)
+        if len(gated_events) == 0:
+            self._canvas.set_data(gated_events)
             return
     
         x_ch = self._x_combo.currentData() or self._x_combo.currentText()
@@ -444,19 +419,19 @@ class GraphWindow(QWidget):
         # Detect logicle T, W, and A from the *gated* events to dynamically open up the 
         # linear region for highly negative compensated data. 
         # (Note: Changed check from LINEAR to BIEXPONENTIAL)
-        if x_scale_active.transform_type == TransformType.BIEXPONENTIAL and x_ch in events.columns:
-            x_scale_active.logicle_t = detect_logicle_top(events[x_ch].values)
+        if x_scale_active.transform_type == TransformType.BIEXPONENTIAL and x_ch in gated_events.columns:
+            x_scale_active.logicle_t = detect_logicle_top(gated_events[x_ch].values)
             
             # ── INJECT ESTIMATOR HERE ──
-            w_val, a_val = estimate_logicle_params(events[x_ch].values, t=x_scale_active.logicle_t)
+            w_val, a_val = estimate_logicle_params(gated_events[x_ch].values, t=x_scale_active.logicle_t)
             x_scale_active.logicle_w = w_val
             x_scale_active.logicle_a = a_val
 
-        if y_scale_active.transform_type == TransformType.BIEXPONENTIAL and y_ch in events.columns:
-            y_scale_active.logicle_t = detect_logicle_top(events[y_ch].values)
+        if y_scale_active.transform_type == TransformType.BIEXPONENTIAL and y_ch in gated_events.columns:
+            y_scale_active.logicle_t = detect_logicle_top(gated_events[y_ch].values)
             
             # ── INJECT ESTIMATOR HERE ──
-            w_val, a_val = estimate_logicle_params(events[y_ch].values, t=y_scale_active.logicle_t)
+            w_val, a_val = estimate_logicle_params(gated_events[y_ch].values, t=y_scale_active.logicle_t)
             y_scale_active.logicle_w = w_val
             y_scale_active.logicle_a = a_val
 
@@ -466,7 +441,7 @@ class GraphWindow(QWidget):
         # render already established them, we preserve those values entirely.
         # This is the single gate that prevents the view from jumping whenever
         # the user switches channels, enters a gate, or changes transform type.
-        if x_ch in events.columns and x_scale_active.min_val is None:
+        if x_ch in gated_events.columns and x_scale_active.min_val is None:
             vmin, vmax = calculate_auto_range(
                 sample.fcs_data.events[x_ch].values,   # full sample, not gated subset
                 x_scale_active.transform_type,
@@ -474,7 +449,7 @@ class GraphWindow(QWidget):
             )
             x_scale_active.min_val, x_scale_active.max_val = float(vmin), float(vmax)
 
-        if y_ch in events.columns and y_scale_active.min_val is None:
+        if y_ch in gated_events.columns and y_scale_active.min_val is None:
             vmin, vmax = calculate_auto_range(
                 sample.fcs_data.events[y_ch].values,   # full sample, not gated subset
                 y_scale_active.transform_type,
@@ -495,18 +470,14 @@ class GraphWindow(QWidget):
         self._canvas.set_axes(x_ch, y_ch, x_label, y_label)
         self._canvas.set_scales(x_scale_active, y_scale_active)
         self._canvas.end_update()       # single redraw with correct axes+scales
-        self._canvas.set_data(events)   # final redraw with gated data
+        self._canvas.set_data(gated_events)   # final redraw with gated data
 
         # Notify the system (and Group Preview) that the scale has been finalized
-        self._state.event_bus.publish(Event(
-            type=EventType.AXIS_RANGE_CHANGED,
-            data={
-                "sample_id": self._sample_id,
-                "x_param": x_ch, "y_param": y_ch,
-                "x_scale": self._x_scale, "y_scale": self._y_scale
-            },
-            source="GraphWindow"
-        ))
+        CentralEventBus.publish(events.AXIS_RANGE_CHANGED, {
+            "sample_id": self._sample_id,
+            "x_param": x_ch, "y_param": y_ch,
+            "x_scale": self._x_scale, "y_scale": self._y_scale
+        })
 
     def apply_axis_scale(self, channel_name: str, scale: AxisScale) -> None:
         """Apply an external scale setting if this graph uses that channel."""
@@ -526,6 +497,30 @@ class GraphWindow(QWidget):
 
     def _on_axis_changed(self) -> None:
         """Handle axis dropdown changes — debounced to avoid redundant renders."""
+        # Update internal scale objects immediately so they match the selection,
+        # even if the actual render is delayed by the debounce timer.
+        x_ch = self._x_combo.currentData() or self._x_combo.currentText()
+        y_ch = self._y_combo.currentData() or self._y_combo.currentText()
+        
+        self._state.active_x_param = x_ch
+        self._state.active_y_param = y_ch
+        
+        from ...analysis._utils import TransformTypeResolver
+        
+        # Sync X scale
+        if x_ch in self._state.channel_scales:
+            self._x_scale = self._state.channel_scales[x_ch].copy()
+        else:
+            tt = TransformTypeResolver.resolve(self._state.active_transform_x)
+            self._x_scale = AxisScale(tt)
+            
+        # Sync Y scale
+        if y_ch in self._state.channel_scales:
+            self._y_scale = self._state.channel_scales[y_ch].copy()
+        else:
+            tt = TransformTypeResolver.resolve(self._state.active_transform_y)
+            self._y_scale = AxisScale(tt)
+
         # Show spinner immediately so the user knows a change was registered
         self._render_spinner.setVisible(True)
         # Restart the debounce timer; actual render fires after 100ms of quiet
@@ -533,41 +528,19 @@ class GraphWindow(QWidget):
 
     def _do_axis_render(self) -> None:
         """Perform the actual render after axis debounce fires."""
-        x_ch = self._x_combo.currentData() or self._x_combo.currentText()
-        self._state.active_x_param = x_ch
-        if x_ch in self._state.channel_scales:
-            # Restore user-configured scale for this channel
-            self._x_scale = self._state.channel_scales[x_ch].copy()
-        else:
-            # First time seeing this channel: inherit the current transform type
-            # but leave min_val/max_val as None so _render_initial auto-ranges it once.
-            from ...analysis._utils import TransformTypeResolver
-            tt = TransformTypeResolver.resolve(self._state.active_transform_x)
-            self._x_scale = AxisScale(tt)
-            
-        y_ch = self._y_combo.currentData() or self._y_combo.currentText()
-        self._state.active_y_param = y_ch
-        if y_ch in self._state.channel_scales:
-            self._y_scale = self._state.channel_scales[y_ch].copy()
-        else:
-            from ...analysis._utils import TransformTypeResolver
-            tt = TransformTypeResolver.resolve(self._state.active_transform_y)
-            self._y_scale = AxisScale(tt)
-            
         self._render_initial()
         self._render_spinner.setVisible(False)
         self.axis_changed.emit()
         
+        x_ch = self._x_combo.currentData() or self._x_combo.currentText()
+        y_ch = self._y_combo.currentData() or self._y_combo.currentText()
+        
         # Publish to event bus for Group Preview sync
-        self._state.event_bus.publish(Event(
-            type=EventType.AXIS_PARAMS_CHANGED,
-            data={
-                "sample_id": self._sample_id,
-                "x_param": x_ch,
-                "y_param": y_ch
-            },
-            source="GraphWindow"
-        ))
+        CentralEventBus.publish(events.AXIS_PARAMS_CHANGED, {
+            "sample_id": self._sample_id,
+            "x_param": x_ch,
+            "y_param": y_ch
+        })
 
     def _on_mode_changed(self, index: int) -> None:
         """Handle display mode changes."""
@@ -576,30 +549,19 @@ class GraphWindow(QWidget):
             self._canvas.set_display_mode(mode)
             # Update global state and notify subscribers (e.g. thumbnails)
             self._state.active_plot_type = mode.value
-            self._state.event_bus.publish(Event(
-                type=EventType.DISPLAY_MODE_CHANGED,
-                data={"mode": mode.value},
-                source="GraphWindow"
-            ))
+            CentralEventBus.publish(events.DISPLAY_MODE_CHANGED, {"mode": mode.value})
 
-    def _set_render_quality(self, mode: str) -> None:
-        """Update render quality state and sync buttons."""
-        self._state.render_quality = mode
-        
-        # Sync buttons
-        self._btn_opt.blockSignals(True)
-        self._btn_full.blockSignals(True)
-        self._btn_opt.setChecked(mode == "optimized")
-        self._btn_full.setChecked(mode == "transparent")
-        self._btn_opt.blockSignals(False)
-        self._btn_full.blockSignals(False)
-        
-        # Update canvas
-        self._canvas._on_quality_mode_changed(mode)
-        
-        # If switching to Full and auto-range is enabled, trigger it
-        if mode == "transparent" and self._state.auto_range_on_quality:
-            self._canvas._auto_range_axes()
+    def _open_render_settings_dialog(self) -> None:
+        """Open the popup dialog to customize density rendering."""
+        from .render_settings_dialog import RenderSettingsDialog
+        dlg = RenderSettingsDialog(self._state, self)
+        dlg.settings_applied.connect(self._on_render_settings_applied)
+        dlg.show()
+
+    def _on_render_settings_applied(self, new_config) -> None:
+        """Apply new settings and re-render."""
+        self._state.view.render_config = new_config
+        self._canvas.redraw()
 
     def _on_gate_created(self, gate: Gate) -> None:
         """Handle gate_created from canvas — forward to controller."""
@@ -679,17 +641,14 @@ class GraphWindow(QWidget):
                 self._notify_axis_change()
             
             if transform_changed:
-                self._state.event_bus.publish(Event(
-                    type=EventType.TRANSFORM_CHANGED,
-                    data={
-                        "sample_id": self._sample_id,
-                        "axis": axis_id,
-                        "channel": x_name if axis_id == "x" else y_name,
-                        "old_type": old_scale.transform_type,
-                        "new_type": new_scale.transform_type,
-                    },
-                    source="GraphWindow"
-                ))
+                self._canvas._on_transform_changed()
+                CentralEventBus.publish(events.TRANSFORM_CHANGED, {
+                    "sample_id": self._sample_id,
+                    "axis": axis_id,
+                    "channel": x_name if axis_id == "x" else y_name,
+                    "old_type": old_scale.transform_type,
+                    "new_type": new_scale.transform_type,
+                })
                 
             self._render_initial()
             
@@ -701,15 +660,11 @@ class GraphWindow(QWidget):
         """Publish the current axis state to the global event bus."""
         x_ch = self._x_combo.currentData() or self._x_combo.currentText()
         y_ch = self._y_combo.currentData() or self._y_combo.currentText()
-        self._state.event_bus.publish(Event(
-            type=EventType.AXIS_RANGE_CHANGED,
-            data={
-                "sample_id": self._sample_id,
-                "x_param": x_ch, "y_param": y_ch,
-                "x_scale": self._x_scale, "y_scale": self._y_scale
-            },
-            source="GraphWindow"
-        ))
+        CentralEventBus.publish(events.AXIS_RANGE_CHANGED, {
+            "sample_id": self._sample_id,
+            "x_param": x_ch, "y_param": y_ch,
+            "x_scale": self._x_scale, "y_scale": self._y_scale
+        })
         
     def _calculate_auto_range(self, axis: str, outlier_p: Optional[float] = None) -> tuple[float, float]:
         """Compute the robust min/max for the given axis, using gated data.

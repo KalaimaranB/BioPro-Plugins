@@ -1,5 +1,35 @@
 import pytest
+from unittest.mock import MagicMock
 from flow_cytometry.analysis.transforms import TransformType
+
+@pytest.fixture
+def graph_window_with_sample_c(qtbot):
+    from flow_cytometry.analysis.state import FlowState
+    from flow_cytometry.analysis.experiment import Sample
+    from flow_cytometry.ui.graph.graph_window import GraphWindow
+    from flow_cytometry.analysis.axis_manager import AxisManager
+    from flow_cytometry.analysis.population_service import PopulationService
+    import pandas as pd
+    
+    state = FlowState()
+    state.axis_manager = AxisManager(state)
+    state.population_service = PopulationService(state)
+    
+    sample = Sample(sample_id="s_c", display_name="Sample C")
+    sample.fcs_data = MagicMock()
+    sample.fcs_data.channels = ["FSC-A", "SSC-A", "FITC-A", "PE-A"]
+    sample.fcs_data.markers = ["", "", "", ""]
+    sample.fcs_data.events = pd.DataFrame({
+        "FSC-A": [100, 200, 300],
+        "SSC-A": [10, 20, 30],
+        "FITC-A": [-10, 0, 100],
+        "PE-A": [5, 10, 500]
+    })
+    state.experiment.samples["s_c"] = sample
+    
+    win = GraphWindow(state, "s_c")
+    qtbot.addWidget(win)
+    return win
 
 @pytest.mark.ui
 class TestGraphWindowAxisIndependence:
@@ -26,9 +56,20 @@ class TestGraphWindowAxisIndependence:
         """Switching Y channel must recompute range from the new channel's data."""
         win = graph_window_with_sample_c
         
+        # Force initial axes to ensure predictable start
+        for i in range(win._x_combo.count()):
+            if win._x_combo.itemData(i) == "FSC-A":
+                win._x_combo.setCurrentIndex(i)
+        for i in range(win._y_combo.count()):
+            if win._y_combo.itemData(i) == "SSC-A":
+                win._y_combo.setCurrentIndex(i)
+        
         from flow_cytometry.analysis.scaling import AxisScale
+        win._state.active_transform_y = "biexponential"
         y_scale = AxisScale(TransformType.BIEXPONENTIAL)
-        win.apply_axis_scale(win._y_combo.currentData(), y_scale)
+        # Register in state so it's not overwritten during render
+        win._state.channel_scales["SSC-A"] = y_scale.copy()
+        win.apply_axis_scale("SSC-A", y_scale)
         win._do_axis_render()
         
         old_y_min = win._y_scale.min_val  # SSC-A (positive floor)
@@ -36,15 +77,13 @@ class TestGraphWindowAxisIndependence:
         # Switch Y to FITC-A (fluorescence with negatives)
         for i in range(win._y_combo.count()):
             if win._y_combo.itemData(i) == "FITC-A":
-                win._y_combo.setCurrentIndex(i)
+                with qtbot.waitSignal(win.axis_changed, timeout=1000):
+                    win._y_combo.setCurrentIndex(i)
                 break
         
-        qtbot.waitSignal(win._axis_debounce.timeout, timeout=1000)
-        qtbot.wait(100)
-
         new_y_min = win._y_scale.min_val
-        assert new_y_min != old_y_min, "Y scale must update after channel switch"
-        assert new_y_min < 0, "FITC-A (compensated) should have negative floor"
+        assert new_y_min != old_y_min, f"Y scale must update after channel switch (old={old_y_min}, new={new_y_min})"
+        assert new_y_min < 0, f"FITC-A (compensated) should have negative floor (got {new_y_min})"
 
     def test_auto_range_button_recomputes_from_current_data(self, qtbot, graph_window_with_sample_c):
         """Auto-Range button must recompute scale from the current channel's data."""

@@ -14,18 +14,17 @@ class TestLinearAutoRange:
         vmin, vmax = calculate_auto_range(data, TransformType.LINEAR)
         assert vmin == 0.0
 
-    def test_linear_ceiling_is_instrument_max(self):
-        """Even if data is small, linear scale should extend to standard instrument scale (262144)."""
+    def test_linear_ceiling_is_dynamic(self):
+        """Ceiling should adapt to data range with headroom, not stay fixed at 262144."""
         data = np.random.uniform(0, 100000, 1000)
         vmin, vmax = calculate_auto_range(data, TransformType.LINEAR)
-        assert vmax == 262144.0
+        # 100k + 5% headroom = 105k
+        assert vmax >= 100000.0
+        assert vmax < 110000.0
 
-    def test_linear_saturation_spikes_ignored(self):
-        """A small fraction (0.1%) of saturation spikes should not inflate the ceiling."""
-        data = np.concatenate([
-            np.random.uniform(1000, 250000, 9990),
-            np.random.uniform(500000, 1000000, 10)  # 0.1% spikes
-        ])
+    def test_linear_snaps_to_18bit_range(self):
+        """If data is close to 18-bit max, it should snap to exactly 262144 for clean axis."""
+        data = np.random.uniform(0, 250000, 1000)
         vmin, vmax = calculate_auto_range(data, TransformType.LINEAR)
         assert vmax == 262144.0
 
@@ -95,10 +94,10 @@ class TestLogicleTopDetection:
 class TestLogicleParamsEstimation:
 
     def test_estimate_logicle_params_positive_data(self):
-        """Positive data gets standard FlowJo defaults: W=0.5, A=0.0."""
+        """Positive data gets standard FlowJo defaults: W=1.0, A=0.0."""
         data = np.random.uniform(100, 200000, 1000)
         w, a = estimate_logicle_params(data)
-        assert w == 0.5
+        assert w == 1.0
         assert a == 0.0
 
     def test_estimate_logicle_params_with_negatives(self):
@@ -108,7 +107,7 @@ class TestLogicleParamsEstimation:
             np.random.uniform(-20000, -10000, 500)
         ])
         w, a = estimate_logicle_params(data)
-        assert w == 0.5
+        assert w == 1.0
         # Based on current estimate_logicle_params implementation, A might be capped to 0.0
         # because of the -np.log10 calculation. We assert the type to ensure the code path runs.
         assert isinstance(a, float)

@@ -21,7 +21,8 @@ from biopro.shared.ui.ui_components import PrimaryButton, SecondaryButton
 
 from ...analysis.state import FlowState
 from ...analysis.fcs_io import load_fcs
-from ...analysis.event_bus import Event, EventType
+from biopro.sdk.core.events import CentralEventBus
+from ...analysis import events
 from ...analysis.experiment import (
     Experiment,
     Sample,
@@ -70,15 +71,7 @@ class WorkspaceRibbon(QWidget):
         btn_group.clicked.connect(self.group_requested)
         layout.addWidget(btn_group)
 
-        btn_load_tmpl = SecondaryButton("📋 Load Template")
-        btn_load_tmpl.setToolTip("Load a workflow template (gates + structure)")
-        btn_load_tmpl.clicked.connect(self._on_load_template)
-        layout.addWidget(btn_load_tmpl)
 
-        btn_save_tmpl = SecondaryButton("💾 Save as Template")
-        btn_save_tmpl.setToolTip("Save current workspace as a reusable template")
-        btn_save_tmpl.clicked.connect(self._on_save_template)
-        layout.addWidget(btn_save_tmpl)
 
         btn_save_wf = PrimaryButton("💾 Save Workflow")
         btn_save_wf.setToolTip("Save all gates, axes, and loaded files as a complete session")
@@ -186,11 +179,10 @@ class WorkspaceRibbon(QWidget):
 
         if loaded_count > 0:
             self.samples_loaded.emit()
-            self._state.event_bus.publish(Event(
-                type=EventType.SAMPLE_LOADED,
-                data={"count": loaded_count},
-                source="WorkspaceRibbon"
-            ))
+            CentralEventBus.publish(events.SAMPLE_LOADED, {
+                "count": loaded_count,
+                "source": "WorkspaceRibbon"
+            })
             logger.info("Loaded %d FCS files.", loaded_count)
 
     def _on_load_template(self) -> None:
@@ -214,11 +206,10 @@ class WorkspaceRibbon(QWidget):
             self.template_load_requested.emit()
             
             # Publish event
-            self._state.event_bus.publish(Event(
-                type=EventType.SAMPLE_LOADED, # Template load usually results in samples being re-registered or refreshed
-                data={"template_name": template.name},
-                source="WorkspaceRibbon"
-            ))
+            CentralEventBus.publish(events.SAMPLE_LOADED, {
+                "template_name": template.name,
+                "source": "WorkspaceRibbon"
+            })
             logger.info("Applied template: %s", template.name)
         except Exception as exc:
             logger.error("Failed to load template %s: %s", path, exc)

@@ -17,7 +17,8 @@ from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.experiment import Sample
 from ...analysis.state import FlowState
-from ...analysis.event_bus import Event, EventType
+from biopro.sdk.core.events import CentralEventBus
+from ...analysis import events
 
 
 # Icons and Colors from the original SampleTree
@@ -56,10 +57,10 @@ class SampleList(QWidget):
 
     def _setup_events(self) -> None:
         """Subscribe to relevant state events."""
-        self._state.event_bus.subscribe(EventType.SAMPLE_LOADED, self._on_event)
+        CentralEventBus.subscribe(events.SAMPLE_LOADED, self._on_sample_loaded)
 
-    def _on_event(self, event: Event) -> None:
-        """Handle incoming bus events."""
+    def _on_sample_loaded(self, data: dict) -> None:
+        """Handle incoming sample loaded events."""
         self.refresh()
 
     def _setup_ui(self) -> None:
@@ -196,6 +197,8 @@ class SampleList(QWidget):
         self._empty_label.setVisible(is_empty)
 
     def _on_double_click(self, item: QTreeWidgetItem, column: int) -> None:
+        if item is None:
+            return
         sample_id = item.data(0, Qt.ItemDataRole.UserRole)
         if sample_id:
             self.sample_double_clicked.emit(sample_id)

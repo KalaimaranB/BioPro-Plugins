@@ -1,0 +1,73 @@
+"""RangeGate class.
+"""
+
+from __future__ import annotations
+
+import numpy as np
+import pandas as pd
+
+from .base import Gate
+from ..transforms import apply_transform, TransformType
+from ..scaling import AxisScale
+from .._utils import (
+    ScaleFactory,
+    TransformTypeResolver,
+    BiexponentialParameters,
+    ScaleSerializer,
+)
+
+class RangeGate(Gate):
+    """1-D range gate for histograms.
+    """
+
+    def __init__(
+        self,
+        x_param: str,
+        *,
+        low: float = -np.inf,
+        high: float = np.inf,
+        adaptive: bool = False,
+        gate_id: Optional[str] = None,
+        x_scale=None,
+    ) -> None:
+        super().__init__(
+            x_param, None,
+            adaptive=adaptive, gate_id=gate_id
+        )
+        self.low = low
+        self.high = high
+        self.x_scale = ScaleFactory.parse(x_scale)
+
+    def copy(self) -> RangeGate:
+        return RangeGate(
+            self.x_param, low=self.low, high=self.high,
+            adaptive=self.adaptive, gate_id=self.gate_id,
+            x_scale=self.x_scale.copy() if self.x_scale else None,
+        )
+
+    def contains(self, events: pd.DataFrame) -> np.ndarray:
+        """Test which events fall inside this range."""
+        if self.x_param not in events.columns:
+            return np.zeros(len(events), dtype=bool)
+
+        x_raw = events[self.x_param].values
+        bounds_raw = np.array([self.low, self.high])
+
+        x_type = TransformTypeResolver.resolve(
+            getattr(self.x_scale, "transform_type", "linear")
+        )
+        x_kwargs = (BiexponentialParameters(self.x_scale).to_dict()
+                    if x_type == TransformType.BIEXPONENTIAL else {})
+
+        # Project to display space
+        x_disp = apply_transform(x_raw, x_type, **x_kwargs)
+        bounds_disp = apply_transform(bounds_raw, x_type, **x_kwargs)
+        low_disp, high_disp = bounds_disp[0], bounds_disp[1]
+
+        return (x_disp >= low_disp) & (x_disp <= high_disp)
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update(low=self.low, high=self.high)
+        d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
+        return d

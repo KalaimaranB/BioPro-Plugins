@@ -14,24 +14,37 @@ from fast_histogram import histogram2d as fast_hist2d
 from scipy.ndimage import gaussian_filter, map_coordinates
 from scipy.stats import rankdata
 
+from .constants import (
+    DEFAULT_NBINS_MIN,
+    DEFAULT_NBINS_MAX,
+    NBINS_SCALING_FACTOR,
+    SIGMA_MIN,
+    SIGMA_SCALING_FACTOR,
+    DENSITY_THRESHOLD_MIN,
+    DENSITY_THRESHOLD_PCT,
+    VIBRANCY_MIN,
+    VIBRANCY_RANGE,
+)
+
 logger = logging.getLogger(__name__)
+
 
 def compute_pseudocolor_points(
     x: np.ndarray, 
     y: np.ndarray, 
     x_range: Tuple[float, float], 
     y_range: Tuple[float, float],
-    quality_multiplier: float = 1.0
+    quality_multiplier: float = 1.0,
+    nbins_scaling: Optional[float] = None,
+    sigma_scaling: Optional[float] = None,
+    density_threshold: Optional[float] = None,
+    vibrancy_min: Optional[float] = None,
+    vibrancy_range: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Compute FlowJo-style pseudocolor density percentiles for each point.
+    """Compute robust, industry-standard pseudocolor density.
     
-    Args:
-        x, y: Transformed coordinates.
-        x_range, y_range: Transformed display limits.
-        quality_multiplier: Scale factor for bin density.
-        
-    Returns:
-        x_sorted, y_sorted, c_sorted: Points sorted by density (Z-order) with 0-1 percentiles.
+    Uses rank-based normalization to ensure visual parity between sparse
+    thumbnails and dense main plots.
     """
     valid = np.isfinite(x) & np.isfinite(y)
     x_vis, y_vis = x[valid], y[valid]
@@ -39,38 +52,89 @@ def compute_pseudocolor_points(
     if len(x_vis) == 0:
         return np.array([]), np.array([]), np.array([])
         
-    if len(x_vis) < 10:
-        return x_vis, y_vis, np.zeros_like(x_vis)
-
-    # 1. Density estimation using fast 2D histogram
     n_points = len(x_vis)
-    # Increased max bins to 1024 for high-res monitors and large datasets.
-    # Base resolution scales with sqrt of points for statistical robustness.
-    N_BINS = int(min(1024, max(128, np.sqrt(n_points) * 2.0)) * quality_multiplier)
+    x_lo, x_hi = x_range
+    y_lo, y_hi = y_range
+
+    # 1. 2D Histogram Computation
+    # Calculates a 2D density grid over the given data range extremely fast using C bindings.
+    # High resolution for both main and subplots ensures density peaks remain sharp.
+    # We cap nbins at DEFAULT_NBINS_MAX to prevent grid undersampling lumpiness ("blocky chunks").
+    nbins_scaling_val = nbins_scaling if nbins_scaling is not None else NBINS_SCALING_FACTOR
+    raw_nbins = max(DEFAULT_NBINS_MIN, np.sqrt(n_points) * nbins_scaling_val)
+    nbins = int(min(DEFAULT_NBINS_MAX, raw_nbins * quality_multiplier))
     
-    # Sigma controls the "blur" of the density map. 
-    # Increased slightly to eliminate quantization artifacts (blocks).
-    sigma = max(1.2, 2.5 * (N_BINS / 1024))
+    # Handle potentially inverted axis limits from Matplotlib
+    x_min, x_max = (min(x_lo, x_hi), max(x_lo, x_hi))
+    y_min, y_max = (min(y_lo, y_hi), max(y_lo, y_hi))
+    
+    # Ensure non-zero span for fast_histogram (prevents divide-by-zero errors)
+    if x_min == x_max: x_max += 1e-6
+    if y_min == y_max: y_max += 1e-6
 
     H = fast_hist2d(
-        y_vis, x_vis,
-        range=[[y_range[0], y_range[1]], [x_range[0], x_range[1]]],
-        bins=N_BINS,
+        x_vis, y_vis,
+        bins=[nbins, nbins],
+        range=[[x_min, x_max], [y_min, y_max]]
     )
-    H_smooth = gaussian_filter(H.astype(np.float64), sigma=sigma)
 
-    # 2. Per-event density lookup (bilinear interpolation)
-    x_span = max(x_range[1] - x_range[0], 1e-12)
-    y_span = max(y_range[1] - y_range[0], 1e-12)
-    x_frac = np.clip((x_vis - x_range[0]) / x_span * N_BINS - 0.5, 0, N_BINS - 1)
-    y_frac = np.clip((y_vis - y_range[0]) / y_span * N_BINS - 0.5, 0, N_BINS - 1)
+    # 2. Robust Gaussian Smoothing
+    # Smoothes the raw histogram to create continuous color transitions 
+    # instead of sharp rectangular bin outlines. 
+    # Sigma scales proportionally with nbins to maintain a consistent visual 'glow' regardless of resolution.
+    sigma_scaling_val = sigma_scaling if sigma_scaling is not None else SIGMA_SCALING_FACTOR
+    sigma = max(SIGMA_MIN, sigma_scaling_val * (nbins / DEFAULT_NBINS_MIN))
+    smoothed = gaussian_filter(H.astype(np.float64), sigma=sigma)
     
-    densities = map_coordinates(H_smooth, [y_frac, x_frac], order=1, mode='nearest')
+    # 3. Interpolated Density Lookup
+    # map_coordinates extracts the exact smoothed density value for each individual event.
+    # This dynamic point-lookup approach completely prevents blocky grid artifacts.
+    x_span = max(x_max - x_min, 1e-12)
+    y_span = max(y_max - y_min, 1e-12)
+    
+    # Map data coordinates to grid indices [0, nbins - 1]
+    x_coords = np.clip((x_vis - x_min) / x_span * (nbins - 1), 0, nbins - 1)
+    y_coords = np.clip((y_vis - y_min) / y_span * (nbins - 1), 0, nbins - 1)
+    
+    # We transpose the smoothed array and use [y_coords, x_coords] to ensure 
+    # the standard (row, col) -> (y, x) mapping aligns correctly with matplotlib backends.
+    densities = map_coordinates(smoothed.T, [y_coords, x_coords], order=1, mode='nearest')
+    
+    # 4. Normalization and Scaling
+    max_d = np.max(densities)
+    c_plot = np.zeros_like(densities)
+    
+    if max_d > 0:
+        # Log scaling reduces contrast gaps so extreme high-density peaks 
+        # don't completely crush the colors of the intermediate sparse regions.
+        d_log = np.log1p(densities)
+        d_min, d_max = np.min(d_log), np.max(d_log)
+        
+        # Linear normalization maps the log-space values to [0, 1] for colormap lookup.
+        # This stable scaling ensures consistent absolute blue colors in low-density subplots.
+        if d_max > d_min:
+            c_plot = (d_log - d_min) / (d_max - d_min)
+        else:
+            c_plot = np.zeros_like(d_log)
+            
+        # 5. Thresholding & Vibrancy
+        # Hard thresholding snaps sparse noise strictly to pure blue (jet 0.0), reducing noise distraction.
+        density_thresh_val = density_threshold if density_threshold is not None else DENSITY_THRESHOLD_MIN
+        c_plot[c_plot < density_thresh_val] = 0.0
+        
+        # Vibrancy amplification mathematically boosts the color range for core populations,
+        # ensuring the mid-to-high densities visually "pop".
+        vib_min_val = vibrancy_min if vibrancy_min is not None else VIBRANCY_MIN
+        vib_range_val = vibrancy_range if vibrancy_range is not None else VIBRANCY_RANGE
+        
+        mask = c_plot > 0
+        if np.any(mask):
+            c_plot[mask] = vib_min_val + vib_range_val * (c_plot[mask] - density_thresh_val) / (1.0 - density_thresh_val)
+            c_plot = np.clip(c_plot, 0, 1)
 
-    # 3. Equal Probability (Percentile) Normalization
-    c_plot = rankdata(densities) / len(densities)
-
-    # 4. Z-sort: dense events render on top
+    # 6. Z-Sorting
+    # Sort events so that dense events are rendered on top, preventing sparse outliers 
+    # from hiding the dense core population.
     sort_idx = np.argsort(c_plot)
     return x_vis[sort_idx], y_vis[sort_idx], c_plot[sort_idx]
 

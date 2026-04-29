@@ -38,6 +38,40 @@ class AxisScale:
     # Outlier bounds (percentile to ignore at each end)
     outlier_percentile: float = 0.1  # Default to 0.1% (p0.1 and p99.9)
 
+    def __post_init__(self):
+        """Validate scale parameters after initialization."""
+        # Validate transform type
+        valid_transforms = {t.value for t in TransformType}
+        if self.transform_type.value not in valid_transforms:
+            raise ValueError(
+                f"Invalid transform_type: {self.transform_type}. "
+                f"Must be one of: {valid_transforms}"
+            )
+        
+        # Validate range
+        if self.min_val is not None and self.max_val is not None:
+            if self.min_val >= self.max_val:
+                raise ValueError(
+                    f"min_val ({self.min_val}) must be less than max_val ({self.max_val})"
+                )
+        
+        # Validate Logicle parameters
+        if self.transform_type == TransformType.BIEXPONENTIAL:
+            if self.logicle_t <= 0:
+                raise ValueError(f"logicle_t must be positive, got {self.logicle_t}")
+            if self.logicle_w < 0:
+                raise ValueError(f"logicle_w must be non-negative, got {self.logicle_w}")
+            if self.logicle_m <= 0:
+                raise ValueError(f"logicle_m must be positive, got {self.logicle_m}")
+            if self.logicle_a < 0:
+                raise ValueError(f"logicle_a must be non-negative, got {self.logicle_a}")
+        
+        # Validate outlier percentile
+        if not 0 <= self.outlier_percentile <= 50:
+            raise ValueError(
+                f"outlier_percentile must be between 0 and 50, got {self.outlier_percentile}"
+            )
+
     def copy(self) -> "AxisScale":
         return AxisScale(
             transform_type=self.transform_type,

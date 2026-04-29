@@ -120,7 +120,7 @@ class Sample:
         """Total number of events (0 if no data loaded)."""
         return self.fcs_data.num_events if self.fcs_data else 0
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         """Serialize sample metadata (not the raw events)."""
         return {
             "sample_id": self.sample_id,

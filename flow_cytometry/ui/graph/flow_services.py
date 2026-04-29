@@ -39,6 +39,8 @@ from ...analysis.gating import (
     QuadrantGate,
     RangeGate,
 )
+from ...analysis._utils import BiexponentialParameters
+from ...analysis.constants import OVERLAY_COLORS
 
 logger = logging.getLogger(__name__)
 
@@ -69,42 +71,22 @@ class CoordinateMapper:
 
     def transform_x(self, x: np.ndarray) -> np.ndarray:
         """Transform X coordinates for display."""
-        x_kwargs = {
-            "top": self.x_scale.logicle_t,
-            "width": self.x_scale.logicle_w,
-            "positive": self.x_scale.logicle_m,
-            "negative": self.x_scale.logicle_a,
-        } if self.x_scale.transform_type == TransformType.BIEXPONENTIAL else {}
+        x_kwargs = BiexponentialParameters(self.x_scale).to_dict() if self.x_scale.transform_type == TransformType.BIEXPONENTIAL else {}
         return apply_transform(x, self.x_scale.transform_type, **x_kwargs)
 
     def transform_y(self, y: np.ndarray) -> np.ndarray:
         """Transform Y coordinates for display."""
-        y_kwargs = {
-            "top": self.y_scale.logicle_t,
-            "width": self.y_scale.logicle_w,
-            "positive": self.y_scale.logicle_m,
-            "negative": self.y_scale.logicle_a,
-        } if self.y_scale.transform_type == TransformType.BIEXPONENTIAL else {}
+        y_kwargs = BiexponentialParameters(self.y_scale).to_dict() if self.y_scale.transform_type == TransformType.BIEXPONENTIAL else {}
         return apply_transform(y, self.y_scale.transform_type, **y_kwargs)
 
     def inverse_transform_x(self, x: np.ndarray) -> np.ndarray:
         """Inverse-transform X coordinates (display → data space)."""
-        x_kwargs = {
-            "top": self.x_scale.logicle_t,
-            "width": self.x_scale.logicle_w,
-            "positive": self.x_scale.logicle_m,
-            "negative": self.x_scale.logicle_a,
-        } if self.x_scale.transform_type == TransformType.BIEXPONENTIAL else {}
+        x_kwargs = BiexponentialParameters(self.x_scale).to_dict() if self.x_scale.transform_type == TransformType.BIEXPONENTIAL else {}
         return invert_transform(x, self.x_scale.transform_type, **x_kwargs)
 
     def inverse_transform_y(self, y: np.ndarray) -> np.ndarray:
         """Inverse-transform Y coordinates (display → data space)."""
-        y_kwargs = {
-            "top": self.y_scale.logicle_t,
-            "width": self.y_scale.logicle_w,
-            "positive": self.y_scale.logicle_m,
-            "negative": self.y_scale.logicle_a,
-        } if self.y_scale.transform_type == TransformType.BIEXPONENTIAL else {}
+        y_kwargs = BiexponentialParameters(self.y_scale).to_dict() if self.y_scale.transform_type == TransformType.BIEXPONENTIAL else {}
         return invert_transform(y, self.y_scale.transform_type, **y_kwargs)
 
     def transform_point(self, x: float, y: float) -> Tuple[float, float]:
@@ -328,11 +310,7 @@ class GateOverlayRenderer:
     """
 
     # Color scheme for gate overlays
-    OVERLAY_COLORS = {
-        "default": "#000000",   # Black
-        "selected": "#2188FF",  # GitHub Blue for selection
-        "inactive": "#888888",  # Gray
-    }
+    OVERLAY_COLORS = OVERLAY_COLORS
 
     def __init__(self, coordinate_mapper: CoordinateMapper, linewidth: float = 2.5):
         """Initialize renderer with coordinate mapper.

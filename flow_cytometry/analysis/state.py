@@ -28,7 +28,9 @@ import numpy as np
 from .compensation import CompensationMatrix
 from .experiment import Experiment, Sample, SampleRole, WorkflowTemplate
 from .scaling import AxisScale
-from .event_bus import EventBus, Event, EventType
+from biopro.sdk.core.events import CentralEventBus
+from . import events
+from .config import FlowConfig, RenderConfig
 
 if TYPE_CHECKING:
     from .axis_manager import AxisManager
@@ -38,72 +40,42 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class FlowState(PluginState):
-    """Mutable state for one flow cytometry analysis session.
-
-    Attributes:
-        experiment:         The full experiment model (samples, groups,
-                            marker mappings, workflow template).
-        compensation:       The computed or imported compensation matrix.
-        current_sample_id:  The sample currently displayed in the main
-                            graph window.
-        current_gate_id:    The gate currently selected in the tree.
-        active_x_param:     X-axis parameter for the current graph.
-        active_y_param:     Y-axis parameter for the current graph.
-        active_transform_x: Transform type string for X axis.
-        active_transform_y: Transform type string for Y axis.
-        active_plot_type:   Current plot display mode.
-    """
-
-    # ── Core data ─────────────────────────────────────────────────────
+class ExperimentState:
+    """Domain model state layer."""
     experiment: Experiment = field(default_factory=Experiment)
     compensation: Optional[CompensationMatrix] = None
 
-    # ── View state ────────────────────────────────────────────────────
-    current_sample_id: Optional[str] = None
-    current_gate_id: Optional[str] = None
-    active_x_param: str = "FSC-A"
-    active_y_param: str = "SSC-A"
-    active_transform_x: str = "linear"
-    active_transform_y: str = "linear"
-    active_plot_type: str = "pseudocolor"
-    
-    # ── Transformation State ──────────────────────────────────────────
-    channel_scales: dict[str, AxisScale] = field(default_factory=dict)
-    
-    # ── Services ──────────────────────────────────────────────────────
-    # Initialized in MainPanel but held here for easy access
-    axis_manager: Optional[AxisManager] = None
-    population_service: Optional[PopulationService] = None
-
-    # ── Event System ──────────────────────────────────────────────────
-    # All state changes are published as events via this bus
-    event_bus: EventBus = field(default_factory=EventBus)
-    
-    # ── Rendering preferences ─────────────────────────────────────────
-    auto_range_on_quality: bool = True  # Auto-update axes when render mode changes
-    _render_quality: str = field(default="optimized")
-
-    @property
-    def render_quality(self) -> str:
-        return self._render_quality
-
-    @render_quality.setter
-    def render_quality(self, value: str) -> None:
-        if self._render_quality != value:
-            self._render_quality = value
-            self.event_bus.publish(Event(
-                type=EventType.RENDER_MODE_CHANGED,
-                data={"mode": value},
-                source="FlowState"
-            ))
-
     def to_dict(self) -> dict:
-        """Standard serialization for undo history snapshots."""
-        # Avoid recursive asdict() which crashes on QObjects like event_bus
         return {
             "experiment": self.experiment.to_dict() if hasattr(self.experiment, "to_dict") else None,
             "compensation": self.compensation.to_dict() if hasattr(self.compensation, "to_dict") else None,
+        }
+
+@dataclass
+class ViewState:
+    """UI and presentation state layer."""
+    current_sample_id: Optional[str] = None
+    current_gate_id: Optional[str] = None
+    active_x_param: str = field(default_factory=lambda: FlowConfig.get_last_params()[0])
+    active_y_param: str = field(default_factory=lambda: FlowConfig.get_last_params()[1])
+    active_transform_x: str = "linear"
+    active_transform_y: str = "linear"
+    active_plot_type: str = "pseudocolor"
+    channel_scales: dict[str, AxisScale] = field(default_factory=dict)
+    auto_range_on_quality: bool = field(default_factory=FlowConfig.get_auto_range)
+    _render_config: RenderConfig = field(default_factory=RenderConfig)
+
+    @property
+    def render_config(self) -> RenderConfig:
+        return self._render_config
+
+    @render_config.setter
+    def render_config(self, value: RenderConfig) -> None:
+        self._render_config = value
+        CentralEventBus.publish(events.RENDER_CONFIG_CHANGED, {"config": value})
+
+    def to_dict(self) -> dict:
+        return {
             "current_sample_id": self.current_sample_id,
             "current_gate_id": self.current_gate_id,
             "active_x_param": self.active_x_param,
@@ -113,7 +85,89 @@ class FlowState(PluginState):
             "active_plot_type": self.active_plot_type,
             "channel_scales": {k: v.to_dict() for k, v in self.channel_scales.items()},
             "auto_range_on_quality": self.auto_range_on_quality,
-            "render_quality": self.render_quality,
+            "render_config": self.render_config.to_dict(),
+        }
+
+@dataclass
+class FlowState(PluginState):
+    """Mutable state for one flow cytometry analysis session.
+    
+    Now layered into 'data' (ExperimentState) and 'view' (ViewState).
+    """
+
+    # ── Layers ────────────────────────────────────────────────────────
+    data: ExperimentState = field(default_factory=ExperimentState)
+    view: ViewState = field(default_factory=ViewState)
+    
+    # ── Services ──────────────────────────────────────────────────────
+    axis_manager: Optional[Any] = None
+    population_service: Optional[Any] = None
+
+    # ── Backward Compatibility Properties ───────────────────────────
+    # These allow existing code to access state.experiment instead of state.data.experiment
+    @property
+    def experiment(self) -> Experiment: return self.data.experiment
+    @experiment.setter
+    def experiment(self, val: Experiment): self.data.experiment = val
+
+    @property
+    def compensation(self) -> Optional[CompensationMatrix]: return self.data.compensation
+    @compensation.setter
+    def compensation(self, val: Optional[CompensationMatrix]): self.data.compensation = val
+
+    @property
+    def current_sample_id(self) -> Optional[str]: return self.view.current_sample_id
+    @current_sample_id.setter
+    def current_sample_id(self, val: Optional[str]): self.view.current_sample_id = val
+
+    @property
+    def current_gate_id(self) -> Optional[str]: return self.view.current_gate_id
+    @current_gate_id.setter
+    def current_gate_id(self, val: Optional[str]): self.view.current_gate_id = val
+
+    @property
+    def active_x_param(self) -> str: return self.view.active_x_param
+    @active_x_param.setter
+    def active_x_param(self, val: str): self.view.active_x_param = val
+
+    @property
+    def active_y_param(self) -> str: return self.view.active_y_param
+    @active_y_param.setter
+    def active_y_param(self, val: str): self.view.active_y_param = val
+
+    @property
+    def active_transform_x(self) -> str: return self.view.active_transform_x
+    @active_transform_x.setter
+    def active_transform_x(self, val: str): self.view.active_transform_x = val
+
+    @property
+    def active_transform_y(self) -> str: return self.view.active_transform_y
+    @active_transform_y.setter
+    def active_transform_y(self, val: str): self.view.active_transform_y = val
+
+    @property
+    def active_plot_type(self) -> str: return self.view.active_plot_type
+    @active_plot_type.setter
+    def active_plot_type(self, val: str): self.view.active_plot_type = val
+
+    @property
+    def channel_scales(self) -> dict[str, AxisScale]: return self.view.channel_scales
+
+    @property
+    def render_config(self) -> RenderConfig: return self.view.render_config
+    @render_config.setter
+    def render_config(self, val: RenderConfig): self.view.render_config = val
+
+    @property
+    def auto_range_on_quality(self) -> bool: return self.view.auto_range_on_quality
+    @auto_range_on_quality.setter
+    def auto_range_on_quality(self, val: bool): self.view.auto_range_on_quality = val
+
+    def to_dict(self) -> dict:
+        """Standard serialization for undo history snapshots."""
+        return {
+            "data": self.data.to_dict(),
+            "view": self.view.to_dict(),
         }
 
     # ── Serialization ─────────────────────────────────────────────────
@@ -144,7 +198,7 @@ class FlowState(PluginState):
                 "active_transform_x": self.active_transform_x,
                 "active_transform_y": self.active_transform_y,
                 "active_plot_type": self.active_plot_type,
-                "render_quality": self.render_quality,
+                "render_config": self.render_config.to_dict(),
                 "auto_range_on_quality": self.auto_range_on_quality,
             },
             "channel_scales": {
@@ -181,7 +235,7 @@ class FlowState(PluginState):
         self.active_transform_x = view.get("active_transform_x", "linear")
         self.active_transform_y = view.get("active_transform_y", "linear")
         self.active_plot_type = view.get("active_plot_type", "pseudocolor")
-        self.render_quality = view.get("render_quality", "optimized")
+        self.render_config = RenderConfig.from_dict(view.get("render_config", {}))
         self.auto_range_on_quality = view.get("auto_range_on_quality", True)
 
         # Experiment reconstruction: reload FCS files from saved paths

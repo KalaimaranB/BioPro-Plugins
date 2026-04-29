@@ -644,7 +644,7 @@ class TestFlowCanvasEventHandling:
         
         # This should not crash
         canvas._on_press(event)
-        assert canvas._drag_start == (100, 200)
+        assert canvas._fsm._drag_start == (100, 200)
     
     @pytest.mark.ui
     def test_mouse_release_event_handling(self):
@@ -664,8 +664,8 @@ class TestFlowCanvasEventHandling:
         event.inaxes = canvas._ax
         
         canvas._on_release(event)
-        # Should clear drag start
-        assert canvas._drag_start is None
+        # Should clear drag start in FSM
+        assert canvas._fsm._drag_start is None
     
     @pytest.mark.ui
     def test_drawing_mode_changes(self):
