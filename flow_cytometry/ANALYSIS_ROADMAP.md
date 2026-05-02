@@ -194,11 +194,27 @@ automatically adjust with visual confirmation.
 
 ---
 
-## Phase 8 (Bonus) — Advanced Features
+## Phase 8 — Advanced Features
+- **Boolean Gate Combinations** — Implement logic for AND, OR, and NOT gate intersections.
+- **Backgating Overlays** — Support visualizing a sub-population's distribution across the entire gating tree.
+- **Dimensionality Reduction** — Integration with `tSNE` and `UMAP` for high-parameter discovery.
+- **Clustering** — Automated population discovery via `Leiden` or `Louvain` (scanpy integration).
+- **Workspace Interoperability** — Import/Export via FlowJo (`flowkit.Workspace`) and GatingML 2.0.
 
-- FlowJo workspace import (`flowkit.Workspace`)
-- GatingML 2.0 import/export
-- Boolean gate combinations (AND, OR, NOT)
-- Backgating overlays
-- tSNE / UMAP dimensionality reduction
-- Clustering (Leiden / Louvain via scanpy integration)
+---
+
+## Phase 9 — High-Performance Pipeline
+**Goal**: Ensure zero-latency UI even with 10M+ event datasets.
+
+1. **Multi-threaded Rendering** — Move all density/contour calculations to a background thread pool (TaskScheduler).
+2. **Result Caching** — Cache computed density grids so changing visualization parameters (color/size) doesn't require a re-calculation.
+3. **Hardware Acceleration** — Explore GPU-accelerated density estimation for real-time contour updates.
+
+---
+
+## Phase 10 — State Integrity & Refactoring
+**Goal**: Finalize the SOLID architecture and remove technical debt.
+
+1. **Remove Backward Compatibility** — Purge the `FlowState` proxy properties once the new nested dataclass pattern is stabilized.
+2. **Unified Coordinate Mapping** — Enforce the `CoordinateMapper` as the single source of truth for all raw-to-display conversions across main plots and subplots.
+3. **Systematic Testing** — Achieve 95% unit test coverage for `analysis/gating` and `analysis/transforms`.

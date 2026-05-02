@@ -67,8 +67,10 @@ class EllipseGate(Gate):
 
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Test which events fall inside this ellipse."""
-        if self.x_param not in events.columns or self.y_param not in events.columns:
-            return np.zeros(len(events), dtype=bool)
+        if self.x_param not in events.columns:
+            raise KeyError(self.x_param)
+        if self.y_param not in events.columns:
+            raise KeyError(self.y_param)
 
         x_raw = events[self.x_param].values
         y_raw = events[self.y_param].values

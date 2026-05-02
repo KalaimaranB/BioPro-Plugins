@@ -32,22 +32,43 @@ class AxisManager(QObject):
     def __init__(self, state: FlowState, parent=None):
         super().__init__(parent)
         self._state = state
+        self._fallback_scales: dict[str, AxisScale] = {}
 
-    def get_scale(self, channel: str) -> AxisScale:
-        """Get the current scale for a channel, creating a default if needed."""
-        if channel not in self._state.channel_scales:
-            self._state.channel_scales[channel] = AxisScale()
-        return self._state.channel_scales[channel]
+    def get_scale(self, channel: str, sample_id: Optional[str] = None) -> AxisScale:
+        """Get the current scale for a channel from the sample's primary group."""
+        if sample_id:
+            sample = self._state.experiment.samples.get(sample_id)
+            if sample and sample.group_ids:
+                group = self._state.experiment.groups.get(sample.group_ids[0])
+                if group:
+                    if channel not in group.channel_scales:
+                        group.channel_scales[channel] = AxisScale()
+                    return group.channel_scales[channel]
+        
+        if channel not in self._fallback_scales:
+            self._fallback_scales[channel] = AxisScale()
+        return self._fallback_scales[channel]
 
-    def set_scale(self, channel: str, scale: AxisScale, notify: bool = True):
-        """Update a channel's scale and notify listeners."""
-        self._state.channel_scales[channel] = scale.copy()
+    def set_scale(self, channel: str, scale: AxisScale, notify: bool = True, sample_id: Optional[str] = None):
+        """Update a channel's scale in the sample's primary group and notify listeners."""
+        saved = False
+        if sample_id:
+            sample = self._state.experiment.samples.get(sample_id)
+            if sample and sample.group_ids:
+                group = self._state.experiment.groups.get(sample.group_ids[0])
+                if group:
+                    group.channel_scales[channel] = scale.copy()
+                    saved = True
+                    
+        if not saved:
+            self._fallback_scales[channel] = scale.copy()
+            
         if notify:
             self.axis_updated.emit(channel, scale)
 
-    def calculate_range(self, data: pd.Series, channel: str) -> tuple[float, float]:
+    def calculate_range(self, data: pd.Series, channel: str, sample_id: Optional[str] = None) -> tuple[float, float]:
         """Calculate the display range for a channel based on data and scale settings."""
-        scale = self.get_scale(channel)
+        scale = self.get_scale(channel, sample_id)
         
         # If manual range is set, use it
         if scale.min_val is not None and scale.max_val is not None:
@@ -68,9 +89,9 @@ class AxisManager(QObject):
             return None
             
         data = sample.fcs_data.events[channel]
-        new_range = self.calculate_range(data, channel)
+        new_range = self.calculate_range(data, channel, sample_id)
         
-        scale = self.get_scale(channel).copy()
+        scale = self.get_scale(channel, sample_id).copy()
         scale.min_val, scale.max_val = new_range
-        self.set_scale(channel, scale)
+        self.set_scale(channel, scale, sample_id=sample_id)
         return new_range

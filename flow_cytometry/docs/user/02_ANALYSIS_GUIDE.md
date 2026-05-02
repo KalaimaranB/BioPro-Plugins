@@ -46,21 +46,29 @@ Gating is hierarchical. Selecting a child gate in the **Sample Tree** filters th
 
 ---
 
-## 4. Publication-Quality Export
+## 4. Visualization & Render Settings
 
-While the main canvas is optimized for speed, the **Full Render** engine is designed for publication.
+BioPro provides a powerful, interactive system to refine the visual style of your data. You can access these controls by clicking the **⚙️ Settings** button on the graph toolbar.
 
-### Creating a Full Render
-1. **Right-Click** anywhere on the center canvas.
-2. Select **🖼️ Render Full Quality...**.
-3. The resulting window processes **every single event** (no subsampling) and uses high-resolution grids (1024x1024).
+### The Render Settings Dialog
+This non-modal dialog allows you to tweak parameters and see the results instantly on the plot:
 
-### Export Options
-- **📋 Copy to Clipboard**: High-res bitmap for slides.
-- **💾 Publication Export**: Save as **PNG (300 DPI)** or vector-based **PDF/SVG** for manuscripts.
+- **Point Size & Opacity**: Dial up the marker size and transparency to create the signature "thick" look seen in FlowJo.
+- **Population Detail (Bins)**: Controls the resolution of the density grid. High detail is better for export; low detail is faster for exploration.
+- **Smoothing (Sigma)**: Adjusts the Gaussian "blur" applied to populations. Higher smoothing creates softer, more continuous clouds.
+- **Background Suppression**: A threshold that snaps low-density background noise to pure blue, cleaning up the plot edges.
+
+### Using Presets
+For consistent results, use the built-in presets:
+- **Standard**: Optimized for balanced exploration of most datasets.
+- **Publication**: Maximum resolution and smoothing for manuscript-ready figures.
+- **Fast Preview**: Aggressive subsampling for real-time responsiveness on large (10M+) files.
+
+### Global vs. Local Application
+By default, changing settings in the dialog applies to **all open plots** to ensure consistency across your workspace.
 
 ---
 
 ## 🔗 Deep Dives
-- **[Scientific Principles of Logicle Transforms](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/03_SCIENTIFIC_LOGIC.md)**
-- **[Developer API Reference](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/01_API_REFERENCE.md)**
+- **[Getting Started](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/01_GETTING_STARTED.md)**
+- **[The Science of Flow](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/03_SCIENTIFIC_LOGIC.md)**: Why rank-percentile math makes plots look better.

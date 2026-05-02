@@ -48,7 +48,7 @@ class RangeGate(Gate):
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Test which events fall inside this range."""
         if self.x_param not in events.columns:
-            return np.zeros(len(events), dtype=bool)
+            raise KeyError(self.x_param)
 
         x_raw = events[self.x_param].values
         bounds_raw = np.array([self.low, self.high])

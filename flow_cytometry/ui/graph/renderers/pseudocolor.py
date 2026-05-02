@@ -57,7 +57,7 @@ class PseudocolorStrategy(DisplayStrategy):
         
         # Revert to 'o' to maintain FlowJo's thick blue cloud appearance
         # Point size 1.0 for Full, 1.5 for Optimized
-        cmap_name = kwargs.get("cmap", "jet")
+        cmap_name = kwargs.get("cmap", kwargs.get("colormap", "jet"))
         alpha = kwargs.get("alpha", 0.6)
         is_full = kwargs.get("quality_multiplier", 1.0) >= 2.0
         point_size = 1.0 if is_full else 1.5

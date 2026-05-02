@@ -22,6 +22,7 @@ from typing import Optional
 
 from .fcs_io import FCSData
 from .gating import GateNode
+from .scaling import AxisScale
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +110,7 @@ class Sample:
     gate_tree: GateNode = field(default_factory=GateNode)
     keywords: dict[str, str] = field(default_factory=dict)
     is_compensated: bool = False
+    last_viewed_axes: dict[str, dict] = field(default_factory=dict)
 
     @property
     def has_data(self) -> bool:
@@ -132,6 +134,7 @@ class Sample:
             "group_ids": self.group_ids,
             "keywords": self.keywords,
             "is_compensated": self.is_compensated,
+            "last_viewed_axes": self.last_viewed_axes,
             "gate_tree": self.gate_tree.to_dict(),
         }
 
@@ -152,6 +155,7 @@ class Sample:
             keywords=data.get("keywords", {}),
             is_compensated=data.get("is_compensated", False),
         )
+        sample.last_viewed_axes = data.get("last_viewed_axes", {})
         if "gate_tree" in data:
             sample.gate_tree = GateNode.from_dict(data["gate_tree"])
         return sample
@@ -174,6 +178,7 @@ class Group:
     role: GroupRole = GroupRole.CUSTOM
     color: str = "#4A90D9"
     sample_ids: list[str] = field(default_factory=list)
+    channel_scales: dict[str, AxisScale] = field(default_factory=dict)
 
     @property
     def size(self) -> int:
@@ -186,6 +191,7 @@ class Group:
             "role": self.role.value,
             "color": self.color,
             "sample_ids": self.sample_ids,
+            "channel_scales": {ch: sc.to_dict() for ch, sc in self.channel_scales.items()},
         }
 
     @classmethod
@@ -197,6 +203,11 @@ class Group:
             color=data.get("color", "#4A90D9"),
             sample_ids=data.get("sample_ids", []),
         )
+        group.channel_scales = {
+            ch: AxisScale.from_dict(sc) 
+            for ch, sc in data.get("channel_scales", {}).items()
+        }
+        return group
 
 
 # ── Workflow Template ────────────────────────────────────────────────────────

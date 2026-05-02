@@ -83,23 +83,78 @@ class DataLayerRenderer:
         # Draw based on mode
         strategy = RenderStrategyFactory.get_strategy(canvas._display_mode.value)
         render_config = canvas._state.view.render_config if canvas._state else None
-        
+
         # Base kwargs
         render_kwargs = {
             "quality_multiplier": canvas._quality_multiplier,
             "grid_size": int(512 * canvas._quality_multiplier),
             "alpha": 1.0 if canvas._quality_multiplier >= 2.0 else 0.8
         }
-        
+
         if render_config:
-            render_kwargs.update({
-                "max_events": render_config.max_events if canvas._quality_multiplier < 2.0 else None,
-                "nbins_scaling": render_config.nbins_scaling,
-                "sigma_scaling": render_config.sigma_scaling,
-                "density_threshold": render_config.density_threshold,
-                "vibrancy_min": render_config.vibrancy_min,
-                "vibrancy_range": render_config.vibrancy_range,
-            })
+            from ..flow_canvas import DisplayMode
+            mode = canvas._display_mode
+
+            if mode == DisplayMode.PSEUDOCOLOR:
+                pc = render_config.pseudocolor
+                render_kwargs.update({
+                    "max_events": pc.max_events if canvas._quality_multiplier < 2.0 else None,
+                    "nbins_scaling": pc.population_detail,
+                    "sigma_scaling": pc.population_smoothing,
+                    "density_threshold": pc.background_suppression,
+                    "vibrancy_min": pc.vibrancy_min,
+                    "vibrancy_range": pc.vibrancy_range,
+                    "colormap": pc.colormap,
+                    "cmap": pc.colormap,
+                    "point_size": pc.point_size,
+                    "s": pc.point_size,
+                    "opacity": pc.opacity,
+                    "alpha": pc.opacity,
+                })
+            elif mode == DisplayMode.DOT_PLOT:
+                dp = render_config.dot_plot
+                render_kwargs.update({
+                    "max_events": dp.max_events if canvas._quality_multiplier < 2.0 else None,
+                    "dot_color": dp.dot_color,
+                    "c": dp.dot_color,
+                    "dot_size": dp.dot_size,
+                    "s": dp.dot_size,
+                    "opacity": dp.opacity,
+                    "alpha": dp.opacity,
+                })
+            elif mode == DisplayMode.HISTOGRAM:
+                h = render_config.histogram
+                render_kwargs.update({
+                    "bar_color": h.bar_color,
+                    "color": h.bar_color,
+                    "bins": h.bins,
+                    "auto_bins": h.auto_bins,
+                    "y_axis_mode": h.y_axis_mode,
+                    "density": (h.y_axis_mode == "frequency"),
+                    "filled": h.filled,
+                    "smooth_kde": h.smooth_kde,
+                })
+            elif mode == DisplayMode.CONTOUR:
+                c = render_config.contour
+                render_kwargs.update({
+                    "num_levels": c.num_levels,
+                    "levels": c.num_levels,
+                    "smoothing": c.smoothing,
+                    "sigma": c.smoothing,
+                    "color_mode": c.color_mode,
+                    "colormap": c.colormap,
+                    "show_filled": c.show_filled,
+                    "show_dot_underlay": c.show_dot_underlay,
+                })
+            elif mode == DisplayMode.DENSITY:
+                d = render_config.density
+                render_kwargs.update({
+                    "colormap": d.colormap,
+                    "cmap": d.colormap,
+                    "grid_resolution": d.grid_resolution,
+                    "opacity": d.opacity,
+                    "alpha": d.opacity,
+                })
         else:
             render_kwargs["max_events"] = canvas._max_events
         

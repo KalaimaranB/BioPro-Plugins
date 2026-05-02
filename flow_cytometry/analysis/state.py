@@ -61,7 +61,6 @@ class ViewState:
     active_transform_x: str = "linear"
     active_transform_y: str = "linear"
     active_plot_type: str = "pseudocolor"
-    channel_scales: dict[str, AxisScale] = field(default_factory=dict)
     auto_range_on_quality: bool = field(default_factory=FlowConfig.get_auto_range)
     _render_config: RenderConfig = field(default_factory=RenderConfig)
 
@@ -83,7 +82,6 @@ class ViewState:
             "active_transform_x": self.active_transform_x,
             "active_transform_y": self.active_transform_y,
             "active_plot_type": self.active_plot_type,
-            "channel_scales": {k: v.to_dict() for k, v in self.channel_scales.items()},
             "auto_range_on_quality": self.auto_range_on_quality,
             "render_config": self.render_config.to_dict(),
         }
@@ -151,9 +149,6 @@ class FlowState(PluginState):
     def active_plot_type(self, val: str): self.view.active_plot_type = val
 
     @property
-    def channel_scales(self) -> dict[str, AxisScale]: return self.view.channel_scales
-
-    @property
     def render_config(self) -> RenderConfig: return self.view.render_config
     @render_config.setter
     def render_config(self, val: RenderConfig): self.view.render_config = val
@@ -200,9 +195,6 @@ class FlowState(PluginState):
                 "active_plot_type": self.active_plot_type,
                 "render_config": self.render_config.to_dict(),
                 "auto_range_on_quality": self.auto_range_on_quality,
-            },
-            "channel_scales": {
-                ch: sc.to_dict() for ch, sc in self.channel_scales.items()
             }
         }
 
@@ -248,11 +240,6 @@ class FlowState(PluginState):
             if sample_paths:
                 logger.info(f"Reloading {len(sample_paths)} FCS files...")
                 self._reload_fcs_data(sample_paths)
-
-        # Scale parameters
-        scales_data = data.get("channel_scales", {})
-        for ch, sc_data in scales_data.items():
-            self.channel_scales[ch] = AxisScale.from_dict(sc_data)
 
         logger.info("FlowState restoration complete.")
 

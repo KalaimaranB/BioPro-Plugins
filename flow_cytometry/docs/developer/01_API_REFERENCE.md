@@ -112,4 +112,5 @@ The module implements a robust auto-range algorithm that ignores outliers at the
 
 ## 🔗 Internal Links
 - **[Architecture Overview](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/00_ARCHITECTURE_OVERVIEW.md)**
-- **[UI Engine & FSM](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/02_UI_ENGINE.md)**
+- **[UI Engine & Rendering](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/02_UI_ENGINE.md)**
+- **[Testing & QA](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/03_TESTING_AND_QA.md)**

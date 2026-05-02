@@ -410,16 +410,23 @@ class GraphManager(QWidget):
         self.gate_selection_changed.emit(gate_id)
 
     def _on_axis_scale_sync(self, channel_name: str, scale) -> None:
-        """Propagate AxisScale to all other graphs mapping this channel
-        and save to global state for new graphs.
-        """
-        self._state.channel_scales[channel_name] = scale.copy()
-        
+        """Propagate AxisScale to all other graphs in the same group."""
         sender = self.sender()
+        
+        sender_group_ids = []
+        if hasattr(sender, "sample_id"):
+            sender_sample = self._state.experiment.samples.get(sender.sample_id)
+            if sender_sample:
+                sender_group_ids = sender_sample.group_ids
+                
         for graph in self._graphs.values():
             if graph is sender:
                 continue
-            graph.apply_axis_scale(channel_name, scale)
+            
+            # Only propagate to graphs showing samples in the same group
+            graph_sample = self._state.experiment.samples.get(graph.sample_id)
+            if graph_sample and any(g in sender_group_ids for g in graph_sample.group_ids):
+                graph.apply_axis_scale(channel_name, scale)
 
     def refresh(self) -> None:
         """Refresh all open graph windows."""

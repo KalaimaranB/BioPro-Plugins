@@ -22,24 +22,40 @@ flow_cytometry/
 ├── __init__.py           # Exposes FlowCytometryPanel
 ├── manifest.json         # BioPro Registry Metadata
 ├── analysis/             # SCALAR LOGIC ONLY
+├── analysis/             # SCALAR LOGIC (No GUI dependencies)
 │   ├── state.py          # Session state container
 │   ├── experiment.py     # Experiment model + workflow templates
-│   ├── compensation.py   # Spillover matrix engine
+│   ├── scaling.py        # Axis scaling and coordinate math
 │   ├── transforms.py     # Logicle/log/linear via flowkit
-│   ├── gating.py         # Gate types + hierarchical tree
-│   ├── statistics.py     # Population statistics
-│   └── fcs_io.py         # FlowKit-backed FCS loading
+│   ├── gating/           # Gating logic (Decoupled into types)
+│   ├── rendering.py      # Core density/contour math
+│   └── services/         # Domain-specific logic (splitters, modifiers)
 ├── ui/                   # GUI VIEW LAYER
-│   ├── main_panel.py     # Root workspace widget
-│   ├── graph/            # FlowCanvas (matplotlib) + services
-│   ├── ribbons/          # Toolbar action components
-│   └── widgets/          # Sidebar panels (groups, tree, props)
-├── workflows/             # Pre-built workflow templates (JSON)
-└── docs/                  # This documentation suite```
+│   ├── graph/            # Matplotlib canvas and rendering layers
+│   │   ├── canvas/       # Decoupled Data and Gate layers (SOLID)
+│   │   ├── render_panels/# Context-sensitive settings panels
+│   │   └── renderers/    # Strategy-based plot renderers
+│   ├── widgets/          # Sidebar panels (groups, tree, props)
+│   └── main_panel.py     # Root orchestrator
+├── workflows/            # Pre-built workflow templates (JSON)
+└── docs/                 # Knowledge Hub
+```
 
 ---
 
-## 3. The `FlowState` Architecture
+## 3. Layered Graphical Design (SOLID)
+
+To prevent the "God Object" anti-pattern in `FlowCanvas`, the graphical engine is decomposed into three distinct, specialized layers:
+
+1. **Data Layer (`DataLayerRenderer`)**: Responsible for pure event rendering (Pseudocolor, Histogram, etc.). It communicates with the background `RenderTask` to compute densities without blocking the UI thread.
+2. **Gate Layer (`GateLayerRenderer`)**: Handles the interactive overlay of gating geometry. It sits on top of the data layer and manages its own artists for performance isolation.
+3. **Event Layer (`CanvasEventHandler`)**: Captures mouse/keyboard interaction and drives the `GateDrawingFSM` (Finite State Machine).
+
+This separation ensures that a bug in gate selection doesn't crash the background data rendering pipeline, and vice-versa.
+
+---
+
+## 4. The `FlowState` Architecture
 
 Like all BioPro architecture, the module uses a Unidirectional Data Flow. The beating heart of the plugin is `FlowState`.
 
@@ -47,55 +63,28 @@ Like all BioPro architecture, the module uses a Unidirectional Data Flow. The be
 @dataclass
 class FlowState:
     experiment: Experiment
-    compensation: CompensationMatrix
+    render_config: RenderConfig  # Centralized visualization params
     current_sample_id: str
     active_x_param: str
-    active_plot_type: str
+    active_display_mode: DisplayMode
 ```
 
 **State is highly segregated from the GUI:**
-1. The user clicks a button in `CompensationRibbon`.
-2. The ribbon calls pure python math housed in `analysis/compensation.py`.
-3. The math returns a generic `CompensationMatrix` dataclass.
-4. The ribbon binds that dataclass matrix to `self._state.compensation = new_matrix`.
-5. The ribbon calls `self.compensation_changed.emit()`.
-6. The main panel hears the emit, calls `.refresh()` on all UI components (which blindly re-read values from `self._state`), and instantly pipes `state_changed` to the BioPro HistoryManager so the state can be saved for Undo/Redo.
+1. The user adjusts a slider in the `PseudocolorSettingsPanel`.
+2. The panel updates the `RenderConfig` inside the `FlowState`.
+3. The panel emits a `render_settings_changed` signal.
+4. The `FlowCanvas` hears the signal, triggers a new `RenderTask` with the updated config, and repaints once the math is finished.
 
 ---
 
-## 4. BioPro Plugin Contract
-
-The module integrates dynamically into BioPro. It exports `FlowCytometryPanel` satisfying the rigid Core integration APIs:
-
-### 1. `export_state(self) -> dict` 
-Emits a lightweight snapshot of UI parameters and small string allocations. Since raw FCS dataframe data is hundreds of megabytes, we do NOT serialize pandas dataframes into the Undo/Redo stack. 
-
-### 2. `load_state(self, state_dict: dict)`
-Triggered when the user hits CTRL+Z. Pushes historical parameters back into `FlowState` and forces all graphs and tables to instantly repaint. 
-
-### 3. `export_workflow(self) -> dict`
-Used for writing to the disk. Here, we actually serialize paths to the FCS files. 
-
-```python
-def to_workflow_dict(self):
-    sample_paths = {}
-    for sid, sample in self.experiment.samples.items():
-        sample_paths[sid] = str(sample.fcs_data.file_path)
-    # ...
-```
-
-### 4. `load_workflow(self, payload: dict)`
-Used for resuming sessions across days. The payload triggers a sequence of `flowkit` parsing calls to reload all physical files recorded in the payload before reconstructing the GUI layout.
 ## 5. Sub-system Deep Dives
 
-To keep this overview concise, detailed technical documentation for specific sub-systems has been split into dedicated guides:
-
-*   **[API Reference](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/01_API_REFERENCE.md)**: Detailed signatures for the Gating, Transforms, and Scaling modules.
-*   **[UI Engine & FSM](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/02_UI_ENGINE.md)**: Explanation of the `FlowCanvas` state machine, layered rendering, and the asynchronous `RenderTask` pipeline.
-*   **[Testing & QA](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/03_TESTING_AND_QA.md)**: Guidelines for running the unit, integration, and functional test suites.
+*   **[API Reference](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/01_API_REFERENCE.md)**: Detailed signatures for Gating, Scaling, and Config models.
+*   **[UI Engine & Rendering](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/02_UI_ENGINE.md)**: Details on the asynchronous pipeline and strategy-based rendering.
+*   **[Testing & QA](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/03_TESTING_AND_QA.md)**: Guidelines for the unit and integration test suites.
 
 ---
 
 ## 🔬 Core References
 - **Parks, D.R., et al. (2006)**. A new "Logicle" display method. *Cytometry Part A*.
-- **FlowKit Documentation**: https://github.com/whitews/FlowKit
+- **FlowKit Documentation**: [GitHub Link](https://github.com/whitews/FlowKit)

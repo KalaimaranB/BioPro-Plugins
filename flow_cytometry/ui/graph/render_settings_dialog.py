@@ -1,198 +1,225 @@
-"""Dialog for customizing flow cytometry rendering parameters."""
+"""Render Settings Dialog — tabbed, per-mode scientist-friendly settings.
 
+Each tab hosts an independent panel class from ``render_panels/``.
+This dialog is purely a coordinator — all business logic lives in the panels.
+"""
+
+from __future__ import annotations
 import logging
+
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
-    QSlider, QDoubleSpinBox, QSpinBox, QFormLayout, QWidget
+    QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
+    QLabel, QTabWidget, QScrollArea, QWidget
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import pyqtSignal
 from biopro.ui.theme import Colors, Fonts
 
 from ...analysis.state import FlowState
 from ...analysis.config import RenderConfig
-from ...analysis import constants
+from .flow_canvas import DisplayMode
+from .render_panels import (
+    PseudocolorSettingsPanel,
+    DotPlotSettingsPanel,
+    HistogramSettingsPanel,
+    ContourSettingsPanel,
+    DensitySettingsPanel,
+)
 
 logger = logging.getLogger(__name__)
 
+# Map DisplayMode → tab index (must match addTab order below)
+_MODE_TAB = {
+    DisplayMode.PSEUDOCOLOR: 0,
+    DisplayMode.DOT_PLOT:    1,
+    DisplayMode.HISTOGRAM:   2,
+    DisplayMode.CONTOUR:     3,
+    DisplayMode.DENSITY:     4,
+}
+
+
+def _scrollable(panel: QWidget) -> QScrollArea:
+    """Wrap a panel in a scroll area so it works on small screens."""
+    sa = QScrollArea()
+    sa.setWidgetResizable(True)
+    sa.setFrameShape(QScrollArea.Shape.NoFrame)
+    sa.setStyleSheet(f"background: {Colors.BG_DARKEST};")
+    sa.setWidget(panel)
+    return sa
+
+
 class RenderSettingsDialog(QDialog):
-    """Popup dialog for adjusting pseudocolor rendering parameters."""
-    
+    """Context-sensitive rendering settings dialog.
+
+    Shows only the settings relevant to the currently active plot type
+    (e.g., Pseudocolor, Dot Plot, etc.) to keep the UI clean and scientist-friendly.
+    """
+
     settings_applied = pyqtSignal(RenderConfig)
 
     def __init__(self, state: FlowState, parent: QWidget = None):
         super().__init__(parent)
         self._state = state
-        self._current_config = state.view.render_config
+        self._cfg = RenderConfig.from_dict(state.view.render_config.to_dict())
+
+        # Determine current sample event count for adaptive caps
+        self._sample_n = self._get_sample_event_count()
+
+        # Determine active mode
+        self._active_mode = self._get_active_mode()
         
-        self.setWindowTitle("Rendering Settings")
-        self.setMinimumWidth(400)
-        self.setModal(True)
-        
-        # We don't apply until the user clicks Apply, so we work on a copy.
-        self._working_config = RenderConfig.from_dict(self._current_config.to_dict())
-        
+        self.setWindowTitle(f"{self._active_mode.value} Settings")
+        self.setMinimumWidth(440)
+        self.setMinimumHeight(650)
+        self.setModal(False)   # Modeless — user can interact with plot while tweaking
+        self.setStyleSheet(f"background: {Colors.BG_DARKEST}; color: {Colors.FG_PRIMARY};")
+
+        self._active_panel = None
         self._setup_ui()
-        self._populate_from_config(self._working_config)
-        
-    def _setup_ui(self):
-        layout = QVBoxLayout(self)
-        layout.setSpacing(12)
-        
-        header = QLabel("Pseudocolor Density Settings")
-        header.setStyleSheet(f"font-size: 14px; font-weight: bold; color: {Colors.FG_PRIMARY};")
-        layout.addWidget(header)
-        
-        form_layout = QFormLayout()
-        form_layout.setSpacing(15)
-        
-        # Helper to create a slider + spinbox row
-        def add_control_row(label, tooltip, min_val, max_val, step, current_val, is_int=False):
-            row_layout = QHBoxLayout()
-            
-            if is_int:
-                spin = QSpinBox()
-                spin.setRange(int(min_val), int(max_val))
-                spin.setSingleStep(int(step))
-            else:
-                spin = QDoubleSpinBox()
-                spin.setRange(min_val, max_val)
-                spin.setSingleStep(step)
-                spin.setDecimals(2)
-            
-            spin.setValue(current_val)
-            spin.setFixedWidth(80)
-            spin.setToolTip(tooltip)
-            
-            slider = QSlider(Qt.Orientation.Horizontal)
-            if is_int:
-                slider.setRange(int(min_val), int(max_val))
-                slider.setSingleStep(int(step))
-                slider.setValue(int(current_val))
-                slider.valueChanged.connect(spin.setValue)
-                spin.valueChanged.connect(slider.setValue)
-            else:
-                # Map float to int for slider (e.g. 0.0-1.0 -> 0-100)
-                precision = 100
-                slider.setRange(int(min_val * precision), int(max_val * precision))
-                slider.setValue(int(current_val * precision))
-                slider.valueChanged.connect(lambda v: spin.setValue(v / precision))
-                spin.valueChanged.connect(lambda v: slider.setValue(int(v * precision)))
-            
-            slider.setToolTip(tooltip)
-            
-            row_layout.addWidget(slider)
-            row_layout.addWidget(spin)
-            
-            lbl = self._make_label(label)
-            lbl.setToolTip(tooltip)
-            form_layout.addRow(lbl, row_layout)
-            return spin
 
-        # 1. Max Events
-        self.spin_events = add_control_row(
-            "Max Events:",
-            "The maximum number of events to render on the main plot.\n"
-            "Lower values (e.g. 50k) make the UI faster and smoother.\n"
-            "Higher values (e.g. 500k) show more detail but may lag during gate moves.",
-            10000, 1000000, 10000, self._working_config.max_events, is_int=True
+    # ── Setup ─────────────────────────────────────────────────────────
+
+    def _get_active_mode(self) -> DisplayMode:
+        """Map the string state to the DisplayMode enum."""
+        try:
+            mode_str = self._state.active_plot_type
+            for mode in DisplayMode:
+                if mode.value.lower() == mode_str.lower():
+                    return mode
+        except Exception:
+            pass
+        return DisplayMode.PSEUDOCOLOR
+
+    def _setup_ui(self) -> None:
+        root = QVBoxLayout(self)
+        root.setSpacing(0)
+        root.setContentsMargins(0, 0, 0, 12)
+
+        # Header
+        header = QLabel(f"  {self._active_mode.value} Settings")
+        header.setStyleSheet(
+            f"font-size: 15px; font-weight: 700; color: {Colors.FG_PRIMARY};"
+            f" background: {Colors.BG_DARK}; padding: 14px 16px;"
+            f" border-bottom: 1px solid {Colors.BORDER};"
         )
-        
-        # 2. Grid Resolution (NBins Scaling)
-        self.spin_nbins = add_control_row(
-            "Grid Resolution:",
-            "Multiplies the density estimation grid size.\n"
-            "Higher values make populations appear sharper and less 'blocky'.\n"
-            "Lower values are faster but can result in visible grid artifacts.",
-            0.5, 4.0, 0.1, self._working_config.nbins_scaling
+        root.addWidget(header)
+
+        sub = QLabel("  Changes apply globally to all open plots")
+        sub.setStyleSheet(
+            f"font-size: 11px; color: {Colors.FG_SECONDARY};"
+            f" background: {Colors.BG_DARK}; padding: 4px 16px 10px 16px;"
+            f" border-bottom: 1px solid {Colors.BORDER};"
         )
-        
-        # 3. Smoothing (Sigma)
-        self.spin_sigma = add_control_row(
-            "Smoothing (Sigma):",
-            "Controls the Gaussian blur applied to the density grid.\n"
-            "Higher values create a softer, more continuous 'glow' around populations.\n"
-            "Lower values make the population borders sharper and more granular.",
-            0.1, 5.0, 0.1, self._working_config.sigma_scaling
-        )
-        
-        # 4. Density Threshold
-        self.spin_thresh = add_control_row(
-            "Density Threshold:",
-            "The cutoff below which points are snapped to the pure background blue.\n"
-            "Increase this to hide sparse background noise and 'outliers'.\n"
-            "Decrease this to see every single sparse event in the plot.",
-            0.0, 0.5, 0.01, self._working_config.density_threshold
-        )
-        
-        # 5. Vibrancy Min
-        self.spin_vib_min = add_control_row(
-            "Vibrancy Min:",
-            "The starting brightness floor for population colors.\n"
-            "Higher values make low-density regions appear brighter immediately.\n"
-            "Lower values give a more dramatic contrast between sparse and dense regions.",
-            0.0, 1.0, 0.05, self._working_config.vibrancy_min
-        )
-        
-        # 6. Vibrancy Range
-        self.spin_vib_range = add_control_row(
-            "Vibrancy Range:",
-            "The amplification factor for high-density color transitions.\n"
-            "Higher values make the population 'cores' look more intense and colorful.\n"
-            "Lower values result in a flatter, more uniform color appearance.",
-            0.1, 2.0, 0.05, self._working_config.vibrancy_range
-        )
-        
-        layout.addLayout(form_layout)
-        layout.addStretch()
-        
+        root.addWidget(sub)
+
+        # Instantiate only the active panel
+        mode = self._active_mode
+        if mode == DisplayMode.PSEUDOCOLOR:
+            self._active_panel = PseudocolorSettingsPanel(self._cfg.pseudocolor, self._sample_n)
+        elif mode == DisplayMode.DOT_PLOT:
+            self._active_panel = DotPlotSettingsPanel(self._cfg.dot_plot, self._sample_n)
+        elif mode in (DisplayMode.HISTOGRAM, DisplayMode.CDF):
+            self._active_panel = HistogramSettingsPanel(self._cfg.histogram)
+        elif mode == DisplayMode.CONTOUR:
+            self._active_panel = ContourSettingsPanel(self._cfg.contour)
+        elif mode == DisplayMode.DENSITY:
+            self._active_panel = DensitySettingsPanel(self._cfg.density)
+        else:
+            # Fallback to Pseudocolor if something goes wrong
+            self._active_panel = PseudocolorSettingsPanel(self._cfg.pseudocolor, self._sample_n)
+
+        # Wrap in scroll area
+        root.addWidget(_scrollable(self._active_panel), stretch=1)
+
         # Buttons
-        btn_layout = QHBoxLayout()
-        
-        self.btn_reset = QPushButton("Reset to Defaults")
-        self.btn_reset.setToolTip("Restore all sliders to standard optimized parameters.")
-        self.btn_reset.clicked.connect(self._reset_to_defaults)
-        
-        self.btn_apply = QPushButton("Apply")
-        self.btn_apply.setStyleSheet(f"background-color: {Colors.ACCENT_PRIMARY}; color: {Colors.BG_DARKEST}; font-weight: bold;")
-        self.btn_apply.clicked.connect(self._apply_settings)
-        
-        self.btn_close = QPushButton("Close")
-        self.btn_close.clicked.connect(self.accept)
-        
-        btn_layout.addWidget(self.btn_reset)
-        btn_layout.addStretch()
-        btn_layout.addWidget(self.btn_close)
-        btn_layout.addWidget(self.btn_apply)
-        
-        layout.addLayout(btn_layout)
+        btn_row = QHBoxLayout()
+        btn_row.setContentsMargins(12, 8, 12, 0)
 
-    def _make_label(self, text: str) -> QLabel:
-        lbl = QLabel(text)
-        lbl.setStyleSheet(f"color: {Colors.FG_SECONDARY};")
-        return lbl
+        self._btn_reset = QPushButton("Reset to Defaults")
+        self._btn_reset.setToolTip("Reset settings to factory defaults.")
+        self._btn_reset.setFixedHeight(30)
+        self._btn_reset.setStyleSheet(self._flat_btn_style())
+        self._btn_reset.clicked.connect(self._reset_current_panel)
 
-    def _populate_from_config(self, config: RenderConfig):
-        self.spin_events.setValue(config.max_events)
-        self.spin_nbins.setValue(config.nbins_scaling)
-        self.spin_sigma.setValue(config.sigma_scaling)
-        self.spin_thresh.setValue(config.density_threshold)
-        self.spin_vib_min.setValue(config.vibrancy_min)
-        self.spin_vib_range.setValue(config.vibrancy_range)
-
-    def _reset_to_defaults(self):
-        """Reset the UI sliders to standard constants."""
-        default_config = RenderConfig()  # Uses constants by default
-        self._populate_from_config(default_config)
-
-    def _apply_settings(self):
-        """Construct a new RenderConfig and emit it without closing."""
-        new_config = RenderConfig(
-            max_events=self.spin_events.value(),
-            nbins_scaling=self.spin_nbins.value(),
-            sigma_scaling=self.spin_sigma.value(),
-            density_threshold=self.spin_thresh.value(),
-            vibrancy_min=self.spin_vib_min.value(),
-            vibrancy_range=self.spin_vib_range.value()
+        self._btn_apply = QPushButton("Apply")
+        self._btn_apply.setFixedHeight(30)
+        self._btn_apply.setStyleSheet(
+            f"QPushButton {{ background: {Colors.ACCENT_PRIMARY}; color: {Colors.BG_DARKEST};"
+            f" border: none; border-radius: 4px; font-size: 12px; font-weight: 700;"
+            f" padding: 2px 20px; }}"
+            f"QPushButton:hover {{ opacity: 0.85; }}"
         )
-        self.settings_applied.emit(new_config)
+        self._btn_apply.clicked.connect(self._apply)
 
+        self._btn_close = QPushButton("Close")
+        self._btn_close.setFixedHeight(30)
+        self._btn_close.setStyleSheet(self._flat_btn_style())
+        self._btn_close.clicked.connect(self.accept)
+
+        btn_row.addWidget(self._btn_reset)
+        btn_row.addStretch()
+        btn_row.addWidget(self._btn_close)
+        btn_row.addWidget(self._btn_apply)
+        root.addLayout(btn_row)
+
+    # ── Helpers ───────────────────────────────────────────────────────
+
+    def _get_sample_event_count(self) -> int:
+        """Return the event count of the active sample, or max of any sample."""
+        try:
+            # Try current sample first
+            sid = self._state.current_sample_id
+            if sid:
+                sample = self._state.experiment.samples.get(sid)
+                if sample and sample.fcs_data and sample.fcs_data.events is not None:
+                    return len(sample.fcs_data.events)
+            
+            # Fallback: check all loaded samples and take the max
+            counts = [
+                len(s.fcs_data.events) for s in self._state.experiment.samples.values()
+                if s.fcs_data and s.fcs_data.events is not None
+            ]
+            if counts:
+                return max(counts)
+        except Exception:
+            pass
+        return 100_000
+
+    def _flat_btn_style(self) -> str:
+        return (
+            f"QPushButton {{ background: {Colors.BG_MEDIUM}; color: {Colors.FG_PRIMARY};"
+            f" border: 1px solid {Colors.BORDER}; border-radius: 4px; font-size: 12px;"
+            f" font-weight: 600; padding: 2px 14px; }}"
+            f"QPushButton:hover {{ color: {Colors.ACCENT_PRIMARY}; }}"
+        )
+
+    def _reset_current_panel(self) -> None:
+        """Reset the active panel to its dataclass defaults."""
+        defaults = RenderConfig()
+        mode = self._active_mode
+        if mode == DisplayMode.PSEUDOCOLOR:
+            self._active_panel.set_config(defaults.pseudocolor)
+        elif mode == DisplayMode.DOT_PLOT:
+            self._active_panel.set_config(defaults.dot_plot)
+        elif mode in (DisplayMode.HISTOGRAM, DisplayMode.CDF):
+            self._active_panel.set_config(defaults.histogram)
+        elif mode == DisplayMode.CONTOUR:
+            self._active_panel.set_config(defaults.contour)
+        elif mode == DisplayMode.DENSITY:
+            self._active_panel.set_config(defaults.density)
+
+    def _apply(self) -> None:
+        """Collect configs from the active panel and emit."""
+        mode = self._active_mode
+        if mode == DisplayMode.PSEUDOCOLOR:
+            self._cfg.pseudocolor = self._active_panel.get_config()
+        elif mode == DisplayMode.DOT_PLOT:
+            self._cfg.dot_plot = self._active_panel.get_config()
+        elif mode in (DisplayMode.HISTOGRAM, DisplayMode.CDF):
+            self._cfg.histogram = self._active_panel.get_config()
+        elif mode == DisplayMode.CONTOUR:
+            self._cfg.contour = self._active_panel.get_config()
+        elif mode == DisplayMode.DENSITY:
+            self._cfg.density = self._active_panel.get_config()
+            
+        logger.info(f"RenderSettingsDialog: applying config for {mode.value}")
+        self.settings_applied.emit(self._cfg)

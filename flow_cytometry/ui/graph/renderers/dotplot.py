@@ -13,16 +13,16 @@ class DotPlotStrategy(DisplayStrategy):
         """Render individual events as dots."""
         max_events = kwargs.get("max_events", 100_000)
         n = len(x)
-        
+
         if max_events is not None and n > max_events:
             idx = np.random.choice(n, max_events, replace=False)
             x, y = x[idx], y[idx]
 
         ax.scatter(
             x, y,
-            s=kwargs.get("s", 2),
-            c=kwargs.get("c", Colors.ACCENT_PRIMARY),
-            alpha=kwargs.get("alpha", 0.25),
+            s=kwargs.get("s", kwargs.get("dot_size", 2)),
+            c=kwargs.get("c", kwargs.get("dot_color", Colors.ACCENT_PRIMARY)),
+            alpha=kwargs.get("alpha", kwargs.get("opacity", 0.25)),
             rasterized=True,
             edgecolors="none",
         )

@@ -353,7 +353,32 @@ class GraphWindow(QWidget):
             default_x = self._state.active_x_param if hasattr(self._state, 'active_x_param') else "FSC-A"
             default_y = self._state.active_y_param if hasattr(self._state, 'active_y_param') else "SSC-A"
 
-            if self._node_id:
+            # Check sample's memory (traverse up gate hierarchy)
+            node_id_to_check = self._node_id
+            found_memory = False
+            
+            while True:
+                key = node_id_to_check or "root"
+                if key in sample.last_viewed_axes:
+                    mem = sample.last_viewed_axes[key]
+                    if "x_param" in mem and "y_param" in mem:
+                        default_x = mem["x_param"]
+                        default_y = mem["y_param"]
+                        found_memory = True
+                        break
+                
+                if not node_id_to_check:
+                    break
+                    
+                node = sample.gate_tree.find_node_by_id(node_id_to_check)
+                if node and node.parent and not node.parent.is_root:
+                    node_id_to_check = node.parent.node_id
+                elif node and node.parent and node.parent.is_root:
+                    node_id_to_check = None
+                else:
+                    break
+
+            if not found_memory and self._node_id:
                 node = sample.gate_tree.find_node_by_id(self._node_id)
                 if node and node.gate:
                     channels = getattr(node.gate, "channels", [])
@@ -420,20 +445,22 @@ class GraphWindow(QWidget):
         # linear region for highly negative compensated data. 
         # (Note: Changed check from LINEAR to BIEXPONENTIAL)
         if x_scale_active.transform_type == TransformType.BIEXPONENTIAL and x_ch in gated_events.columns:
-            x_scale_active.logicle_t = detect_logicle_top(gated_events[x_ch].values)
-            
-            # ── INJECT ESTIMATOR HERE ──
-            w_val, a_val = estimate_logicle_params(gated_events[x_ch].values, t=x_scale_active.logicle_t)
-            x_scale_active.logicle_w = w_val
-            x_scale_active.logicle_a = a_val
+            if x_scale_active.min_val is None:
+                x_scale_active.logicle_t = detect_logicle_top(gated_events[x_ch].values)
+                
+                # ── INJECT ESTIMATOR HERE ──
+                w_val, a_val = estimate_logicle_params(gated_events[x_ch].values, t=x_scale_active.logicle_t)
+                x_scale_active.logicle_w = w_val
+                x_scale_active.logicle_a = a_val
 
         if y_scale_active.transform_type == TransformType.BIEXPONENTIAL and y_ch in gated_events.columns:
-            y_scale_active.logicle_t = detect_logicle_top(gated_events[y_ch].values)
-            
-            # ── INJECT ESTIMATOR HERE ──
-            w_val, a_val = estimate_logicle_params(gated_events[y_ch].values, t=y_scale_active.logicle_t)
-            y_scale_active.logicle_w = w_val
-            y_scale_active.logicle_a = a_val
+            if y_scale_active.min_val is None:
+                y_scale_active.logicle_t = detect_logicle_top(gated_events[y_ch].values)
+                
+                # ── INJECT ESTIMATOR HERE ──
+                w_val, a_val = estimate_logicle_params(gated_events[y_ch].values, t=y_scale_active.logicle_t)
+                y_scale_active.logicle_w = w_val
+                y_scale_active.logicle_a = a_val
 
         # ── AUTO-RANGE (first-time only) ──────────────────────────────────
         # Only compute min/max when the channel has never been ranged before
@@ -462,8 +489,9 @@ class GraphWindow(QWidget):
         # uses the same "Optimized" parameters as this window.
         self._x_scale = x_scale_active.copy()
         self._y_scale = y_scale_active.copy()
-        self._state.channel_scales[x_ch] = self._x_scale.copy()
-        self._state.channel_scales[y_ch] = self._y_scale.copy()
+        if hasattr(self._state, 'axis_manager'):
+            self._state.axis_manager.set_scale(x_ch, self._x_scale.copy(), sample_id=self._sample_id, notify=False)
+            self._state.axis_manager.set_scale(y_ch, self._y_scale.copy(), sample_id=self._sample_id, notify=False)
 
         self._canvas.begin_update()
         self._canvas.set_sample_id(self._sample_id)
@@ -508,18 +536,18 @@ class GraphWindow(QWidget):
         from ...analysis._utils import TransformTypeResolver
         
         # Sync X scale
-        if x_ch in self._state.channel_scales:
-            self._x_scale = self._state.channel_scales[x_ch].copy()
-        else:
-            tt = TransformTypeResolver.resolve(self._state.active_transform_x)
-            self._x_scale = AxisScale(tt)
-            
-        # Sync Y scale
-        if y_ch in self._state.channel_scales:
-            self._y_scale = self._state.channel_scales[y_ch].copy()
-        else:
-            tt = TransformTypeResolver.resolve(self._state.active_transform_y)
-            self._y_scale = AxisScale(tt)
+        if hasattr(self._state, 'axis_manager'):
+            self._x_scale = self._state.axis_manager.get_scale(x_ch, self._sample_id).copy()
+            self._y_scale = self._state.axis_manager.get_scale(y_ch, self._sample_id).copy()
+        
+        # Save to memory
+        sample = self._state.experiment.samples.get(self._sample_id)
+        if sample:
+            key = self._node_id or "root"
+            sample.last_viewed_axes[key] = {
+                "x_param": x_ch,
+                "y_param": y_ch
+            }
 
         # Show spinner immediately so the user knows a change was registered
         self._render_spinner.setVisible(True)
@@ -605,6 +633,8 @@ class GraphWindow(QWidget):
         """Open the unified Transform & Scaling dialog."""
         x_name = self._x_combo.currentText()
         y_name = self._y_combo.currentText()
+        x_ch = self._x_combo.currentData() or x_name
+        y_ch = self._y_combo.currentData() or y_name
 
         def do_auto_range_x(outlier_p: float = 0.1) -> tuple[float, float]:
             return self._calculate_auto_range("x", outlier_p)
@@ -629,15 +659,15 @@ class GraphWindow(QWidget):
             
             if axis_id == "x":
                 self._x_scale = new_scale.copy()
-                # Use the channel name captured when the dialog was opened (Bug #8 fix)
-                self._state.channel_scales[x_name] = self._x_scale.copy()
-                self.axis_scale_sync_requested.emit(x_name, self._x_scale)
+                if hasattr(self._state, 'axis_manager'):
+                    self._state.axis_manager.set_scale(x_ch, self._x_scale.copy(), sample_id=self._sample_id)
+                self.axis_scale_sync_requested.emit(x_ch, self._x_scale)
                 self._notify_axis_change()
             else:
                 self._y_scale = new_scale.copy()
-                # Use the channel name captured when the dialog was opened (Bug #8 fix)
-                self._state.channel_scales[y_name] = self._y_scale.copy()
-                self.axis_scale_sync_requested.emit(y_name, self._y_scale)
+                if hasattr(self._state, 'axis_manager'):
+                    self._state.axis_manager.set_scale(y_ch, self._y_scale.copy(), sample_id=self._sample_id)
+                self.axis_scale_sync_requested.emit(y_ch, self._y_scale)
                 self._notify_axis_change()
             
             if transform_changed:
@@ -645,7 +675,7 @@ class GraphWindow(QWidget):
                 CentralEventBus.publish(events.TRANSFORM_CHANGED, {
                     "sample_id": self._sample_id,
                     "axis": axis_id,
-                    "channel": x_name if axis_id == "x" else y_name,
+                    "channel": x_ch if axis_id == "x" else y_ch,
                     "old_type": old_scale.transform_type,
                     "new_type": new_scale.transform_type,
                 })

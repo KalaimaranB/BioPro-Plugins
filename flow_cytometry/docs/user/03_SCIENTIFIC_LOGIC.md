@@ -108,5 +108,29 @@ This allows you to see the "full spread" of a negative population alongside a mu
 
 ---
 
-### 🎨 From Dots to Discovery
-While a single cell is a dot, a typical experiment contains millions of them. The BioPro software uses advanced "High-Fidelity Rendering" (see the **[User Manual](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/02_ANALYSIS_GUIDE.md)** for **Full Render**) to ensure that whether you are looking at a quick preview or preparing a publication-quality figure, every single cell is accounted for with mathematical precision.
+## Stage 8: Density & Pseudocolor (Rank-Percentile)
+
+When looking at 100,000+ events, individual dots begin to overlap, making it impossible to see the "core" of a population. BioPro uses **Pseudocolor Rendering** to turn these overlapping dots into a meaningful heatmap.
+
+### The Math: Rank Percentile vs. Log-Scaling
+Most software uses simple log-scaling for density, which can result in "pointy" peaks and a lot of sparse noise. BioPro implements **Rank Percentile Normalization** (the "FlowJo" standard) to ensure publication-quality visuals:
+
+1. **Binning**: We divide the plot into a high-resolution grid (up to 1024x1024).
+2. **Smoothing**: A Gaussian kernel "blurs" the counts, converting discrete dots into continuous clouds.
+3. **Ranking**: Instead of absolute density, we calculate each event's **percentile rank**. 
+    - The bottom 5% of events are snapped to pure blue (the "blue cloud").
+    - The top 1% are snapped to pure red (the "hottest core").
+4. **Vibrancy**: We mathematically stretch the color range so the core populations "pop" visually while maintaining a soft, continuous background.
+
+This process ensures that whether you have 10,000 or 1,000,000 events, the plot remains visually balanced and scientifically representative.
+
+---
+
+## 🎨 From Dots to Discovery
+While a single cell is a dot, a typical experiment contains millions of them. Use the **Render Settings** in the software to tweak these parameters (Smoothing, Detail, Point Size) to match your institutional standards or publication requirements.
+
+---
+
+## 🔗 Internal Links
+- **[Getting Started](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/01_GETTING_STARTED.md)**: Tutorial for your first analysis.
+- **[Analysis & Visualization Guide](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/user/02_ANALYSIS_GUIDE.md)**: How to use the Render Settings dialog.

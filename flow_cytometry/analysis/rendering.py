@@ -105,30 +105,26 @@ def compute_pseudocolor_points(
     c_plot = np.zeros_like(densities)
     
     if max_d > 0:
-        # Log scaling reduces contrast gaps so extreme high-density peaks 
-        # don't completely crush the colors of the intermediate sparse regions.
-        d_log = np.log1p(densities)
-        d_min, d_max = np.min(d_log), np.max(d_log)
+        # 4. Rank Percentile Normalization
+        # FlowJo's "secret sauce": instead of log-scaling, we use the percentile rank 
+        # of each event's density. This ensures that the "blue cloud" of low-density 
+        # events is robustly represented regardless of the absolute density values.
+        c_plot = rankdata(densities, method='average') / n_points
         
-        # Linear normalization maps the log-space values to [0, 1] for colormap lookup.
-        # This stable scaling ensures consistent absolute blue colors in low-density subplots.
-        if d_max > d_min:
-            c_plot = (d_log - d_min) / (d_max - d_min)
-        else:
-            c_plot = np.zeros_like(d_log)
-            
         # 5. Thresholding & Vibrancy
-        # Hard thresholding snaps sparse noise strictly to pure blue (jet 0.0), reducing noise distraction.
+        # Background Suppression: Snaps the bottom X% of events strictly to 0.0 (blue).
+        # This cleans up sparse background noise.
         density_thresh_val = density_threshold if density_threshold is not None else DENSITY_THRESHOLD_MIN
         c_plot[c_plot < density_thresh_val] = 0.0
         
-        # Vibrancy amplification mathematically boosts the color range for core populations,
-        # ensuring the mid-to-high densities visually "pop".
+        # Vibrancy: Mathematically amplifies the color range for the rest of the distribution.
         vib_min_val = vibrancy_min if vibrancy_min is not None else VIBRANCY_MIN
         vib_range_val = vibrancy_range if vibrancy_range is not None else VIBRANCY_RANGE
         
         mask = c_plot > 0
         if np.any(mask):
+            # Scale the ranks [threshold, 1.0] -> [vib_min, vib_min + vib_range]
+            # This makes the population core "pop" with vivid colors.
             c_plot[mask] = vib_min_val + vib_range_val * (c_plot[mask] - density_thresh_val) / (1.0 - density_thresh_val)
             c_plot = np.clip(c_plot, 0, 1)
 

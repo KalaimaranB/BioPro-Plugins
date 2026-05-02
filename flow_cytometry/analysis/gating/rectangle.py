@@ -60,7 +60,7 @@ class RectangleGate(Gate):
     def contains(self, events: pd.DataFrame) -> np.ndarray:
         """Test which events fall inside this rectangle."""
         if self.x_param not in events.columns:
-            return np.zeros(len(events), dtype=bool)
+            raise KeyError(self.x_param)
         
         x_raw = events[self.x_param].values
         bounds_x_raw = np.array([self.x_min, self.x_max])
@@ -79,7 +79,9 @@ class RectangleGate(Gate):
         mask = (x_disp >= x_min_disp) & (x_disp <= x_max_disp)
 
         # Apply Y constraint if present
-        if self.y_param and self.y_param in events.columns:
+        if self.y_param:
+            if self.y_param not in events.columns:
+                raise KeyError(self.y_param)
             y_raw = events[self.y_param].values
             bounds_y_raw = np.array([self.y_min, self.y_max])
 

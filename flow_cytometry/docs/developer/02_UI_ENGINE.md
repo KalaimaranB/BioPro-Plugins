@@ -22,30 +22,30 @@ Each state transition is managed by the `_on_mouse_press`, `_on_mouse_move`, and
 
 BioPro Flow Cytometry uses a multi-layered rendering approach to maintain 60 FPS interactivity even with large datasets.
 
-### Layered Rendering
-1.  **Data Layer**: The hexbin density plot or scatter dots. Re-rendered only when axes, transforms, or gates change.
-2.  **Gate Layer**: The boundaries and labels of all active gates. Re-rendered when a gate is created, deleted, or moved.
-3.  **Overlay Layer**: Real-time feedback (mouse crosshairs, tooltips, drag previews). Re-rendered on every mouse movement.
-
-### Asynchronous `RenderTask`
-For operations that take longer than 16ms (like rendering a full 1024x1024 density grid or generating thumbnails for 50 samples), the module uses the `RenderTask` API.
-- **Off-thread Processing**: Histogram calculation and image generation are performed in a background worker.
-- **Signal-based Completion**: Once the image buffer is ready, a signal updates the UI, preventing main-thread "freezing".
+### Layered Rendering (SOLID)
+Since the refactor, the `FlowCanvas` no longer manages rendering logic directly. Instead, it delegates to specialized layer classes:
+1.  **Data Layer (`DataLayerRenderer`)**: Handles heavy-duty event rendering and coordinates with the background `RenderTask`.
+2.  **Gate Layer (`GateLayerRenderer`)**: Manages the life-cycle of gate artists and labels.
+3.  **Event Handler (`CanvasEventHandler`)**: Orchestrates the interaction logic and drives the state machine.
 
 ---
 
-## 3. Axis Synchronization & Debouncing
+## 3. Visualization Settings System
 
-The `GraphWindow` coordinates scaling across multiple tabs.
+The module features a non-modal **Render Settings** system that allows real-time visual tweaking.
 
-### Immediate Sync
-When a user changes an axis parameter (e.g., FITC-A → PE-A), the `GraphWindow` immediately synchronizes the `AxisScale` object for that channel. This ensures that switching between tabs showing the same channel results in identical visual ranges.
+### Context-Sensitive Panels
+The `RenderSettingsDialog` dynamically switches its interface based on the active `DisplayMode`. Each plot type has a dedicated configuration panel:
+- `PseudocolorSettingsPanel`: Controls for rank-percentile density, point size, and smoothing.
+- `HistogramSettingsPanel`: Controls for binning and KDE smoothing.
+- `DotPlotSettingsPanel`: Simple scatter size and color controls.
 
-### Render Debouncing
-To prevent "flicker" during rapid changes (like typing a scale limit or dragging a slider), the rendering engine uses a 100ms debounce timer. This aggregates multiple update requests into a single high-quality render.
+### Preset Integration
+Settings panels include high-level presets (**Standard**, **Publication**, **Fast Preview**) that bundle multiple parameters (smoothing, detail, point size) to achieve professional aesthetics in one click.
 
 ---
 
 ## 🔗 Internal Links
+- **[Architecture & SOLID Design](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/00_ARCHITECTURE_OVERVIEW.md)**
 - **[API Reference](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/01_API_REFERENCE.md)**
 - **[Testing & QA Guide](file:///Users/kalaimaranbalasothy/.biopro/plugins/flow_cytometry/docs/developer/03_TESTING_AND_QA.md)**
