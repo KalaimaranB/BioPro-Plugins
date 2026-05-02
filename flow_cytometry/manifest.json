@@ -1,7 +1,7 @@
 {
     "id": "flow_cytometry",
     "name": "Flow Cytometry Workspace",
-    "version": "0.2.0",
+    "version": "0.2.1",
     "min_core_version": "1.0.4",
     "description": "Scientist-centric flow cytometry analysis with FMO-guided gating, adaptive gates, workflow templates, and full workspace control.",
     "author": "Kalaimaran Balasothy",

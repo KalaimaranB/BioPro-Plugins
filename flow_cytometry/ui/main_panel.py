@@ -224,16 +224,15 @@ class FlowCytometryPanel(PluginBase):
 
         # ── Main Content Splitter ─────────────────────────────────────
         self._main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._main_splitter.setObjectName("mainSplitter")
         self._main_splitter.setSizePolicy(
             QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
         )
 
         # Left sidebar: groups + sample tree
-        left_sidebar = QWidget()
-        left_sidebar.setStyleSheet(
-            f"background: {Colors.BG_DARKEST};"
-        )
-        left_layout = QVBoxLayout(left_sidebar)
+        self._left_sidebar = QWidget()
+        self._left_sidebar.setObjectName("leftSidebar")
+        left_layout = QVBoxLayout(self._left_sidebar)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(0)
 
@@ -241,12 +240,7 @@ class FlowCytometryPanel(PluginBase):
         
         # Vertical Splitter for Samples & Gates
         self._left_splitter = QSplitter(Qt.Orientation.Vertical)
-        self._left_splitter.setStyleSheet(f"""
-            QSplitter::handle {{
-                background-color: {Colors.BORDER};
-                height: 2px;
-            }}
-        """)
+        self._left_splitter.setObjectName("leftSplitter")
         
         self._sample_list = SampleList(self.state)
         self._gate_hierarchy = GateHierarchy(self.state)
@@ -258,10 +252,9 @@ class FlowCytometryPanel(PluginBase):
         left_layout.addWidget(self._groups_panel)
 
         # Separator
-        sep = QWidget()
-        sep.setFixedHeight(1)
-        sep.setStyleSheet(f"background: {Colors.BORDER};")
-        left_layout.addWidget(sep)
+        self._left_sep = QWidget()
+        self._left_sep.setFixedHeight(1)
+        left_layout.addWidget(self._left_sep)
 
         left_layout.addWidget(self._left_splitter, stretch=1)
 
@@ -271,7 +264,7 @@ class FlowCytometryPanel(PluginBase):
         # Right: properties panel
         self._properties_panel = PropertiesPanel(self.state, self._gate_coordinator)
 
-        self._main_splitter.addWidget(left_sidebar)
+        self._main_splitter.addWidget(self._left_sidebar)
         self._main_splitter.addWidget(self._graph_manager)
         self._main_splitter.addWidget(self._properties_panel)
 
@@ -284,6 +277,47 @@ class FlowCytometryPanel(PluginBase):
 
         # ── Wire internal signals ─────────────────────────────────────
         self._wire_signals()
+        
+        # ── Theme Sync ────────────────────────────────────────────────
+        self._apply_theme_styles()
+
+    def _apply_theme_styles(self) -> None:
+        """Dynamically refresh all UI colors based on the current theme."""
+        # 1. Base Panel
+        self.setStyleSheet(f"background: {Colors.BG_DARKEST};")
+        
+        # 2. Tab Bar
+        self._tab_bar.setStyleSheet(
+            f"QTabBar {{ background: {Colors.BG_DARKEST}; border: none; }}"
+            f"QTabBar::tab {{ background: {Colors.BG_DARK}; color: {Colors.FG_SECONDARY}; padding: 10px 20px; border: none; border-bottom: 2px solid transparent; font-size: {Fonts.SIZE_SMALL}px; font-weight: 600; }}"
+            f"QTabBar::tab:selected {{ color: {Colors.ACCENT_PRIMARY}; border-bottom: 2px solid {Colors.ACCENT_PRIMARY}; background: {Colors.BG_DARKEST}; }}"
+            f"QTabBar::tab:hover {{ color: {Colors.FG_PRIMARY}; background: {Colors.BG_MEDIUM}; }}"
+        )
+        
+        # 3. Ribbon Stack
+        self._ribbon_stack.setStyleSheet(
+            f"background: {Colors.BG_DARK}; border-bottom: 1px solid {Colors.BORDER};"
+        )
+        
+        # 4. Splitters
+        splitter_css = f"QSplitter::handle {{ background-color: {Colors.BORDER}; }}"
+        self._main_splitter.setStyleSheet(splitter_css)
+        self._left_splitter.setStyleSheet(f"QSplitter::handle {{ background-color: {Colors.BORDER}; height: 2px; }}")
+        
+        # 5. Sidebars and Separators
+        self._left_sidebar.setStyleSheet(f"background: {Colors.BG_DARKEST};")
+        self._left_sep.setStyleSheet(f"background: {Colors.BORDER};")
+        
+        # 6. Deep recursion for sub-widgets
+        for child in self.findChildren(QWidget):
+            if hasattr(child, "_apply_theme_styles") and child is not self:
+                child._apply_theme_styles()
+            elif hasattr(child, "refresh_styles"):
+                child.refresh_styles()
+            elif child.styleSheet() and child not in [self._tab_bar, self._ribbon_stack, self._main_splitter, self._left_splitter]:
+                # Force refresh of any local QSS that might be using old hex codes
+                child.setStyleSheet(child.styleSheet())
+            child.update()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
