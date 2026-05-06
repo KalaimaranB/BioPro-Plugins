@@ -94,7 +94,7 @@ class TestLogicleTopDetection:
 class TestLogicleParamsEstimation:
 
     def test_estimate_logicle_params_positive_data(self):
-        """Positive data gets standard FlowJo defaults: W=1.0, A=0.0."""
+        """Positive data gets standard industry defaults: W=1.0, A=0.0."""
         data = np.random.uniform(100, 200000, 1000)
         w, a = estimate_logicle_params(data)
         assert w == 1.0

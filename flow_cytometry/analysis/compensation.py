@@ -6,7 +6,7 @@ to multi-stain data.
 
 Supports three sources:
 1. **Computed** from single-stain controls (median-ratio algorithm).
-2. **Imported** from external CSV/TSV or FlowJo files.
+2. **Imported** from external CSV/TSV or other analysis software files.
 3. **Cytometer-embedded** $SPILL / $SPILLOVER from FCS metadata.
 
 Reference:
@@ -16,7 +16,7 @@ Reference:
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -26,7 +26,7 @@ import pandas as pd
 
 from .fcs_io import FCSData
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 @dataclass

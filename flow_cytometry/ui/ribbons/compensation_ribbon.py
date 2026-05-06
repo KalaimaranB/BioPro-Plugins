@@ -10,7 +10,7 @@ Provides toolbar actions for:
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from pathlib import Path
 
 from PyQt6.QtCore import pyqtSignal
@@ -34,7 +34,7 @@ from ...analysis.compensation import (
     apply_compensation,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class CompensationRibbon(QWidget):

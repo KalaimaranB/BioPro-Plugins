@@ -10,7 +10,7 @@ Can be embedded in the Properties panel or opened as a standalone tab.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -27,7 +27,7 @@ from biopro.ui.theme import Colors, Fonts
 from ...analysis.state import FlowState
 from ...analysis.experiment import MarkerMapping
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class MarkerPanel(QWidget):

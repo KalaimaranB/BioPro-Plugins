@@ -8,7 +8,7 @@ All functions operate on pandas DataFrames — no GUI dependencies.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
@@ -16,7 +16,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class StatType(Enum):

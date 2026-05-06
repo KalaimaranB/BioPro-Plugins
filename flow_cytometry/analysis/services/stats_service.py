@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import TYPE_CHECKING, Optional
 
 from ..statistics_analysis import StatisticsAnalysis
@@ -12,7 +12,7 @@ from biopro.core.task_scheduler import task_scheduler
 if TYPE_CHECKING:
     from ..state import FlowState
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class StatsService:
     """Handles submission and application of population statistics.

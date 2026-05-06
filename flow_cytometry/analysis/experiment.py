@@ -14,7 +14,7 @@ with one click.
 from __future__ import annotations
 
 import json
-import logging
+from biopro.sdk.utils.logging import get_logger
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -24,7 +24,7 @@ from .fcs_io import FCSData
 from .gating import GateNode
 from .scaling import AxisScale
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 # ── Enums ────────────────────────────────────────────────────────────────────

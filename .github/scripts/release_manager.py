@@ -61,9 +61,10 @@ def main():
             version = manifest.get('version')
             print(f"Creating release for {module_name} at {tag_name}...")
             
-            # Zip the module folder directly
+            # Zip the module folder directly, excluding tests and junk
             zip_name = f"{module_id}.zip"
-            run_command(f"zip -r {zip_name} {module_id}/")
+            # -x excludes patterns: tests, pycache, DS_Store, and pytest_cache
+            run_command(f"zip -r {zip_name} {module_id}/ -x '*/tests/*' '*/tests/' '*/__pycache__/*' '*/.DS_Store' '*/.pytest_cache/*'")
             
             # Extract custom release notes from manifest, or use a default
             notes = manifest.get('release_notes', f'Automated release for {module_name} v{version}')

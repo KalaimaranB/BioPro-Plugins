@@ -13,7 +13,7 @@ or ``GatePropagator``.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional
 
 from PyQt6.QtCore import Qt
@@ -40,7 +40,7 @@ from .group_preview import GroupPreviewPanel
 from biopro.sdk.core.events import CentralEventBus
 from ...analysis import events
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class PropertiesPanel(QWidget):

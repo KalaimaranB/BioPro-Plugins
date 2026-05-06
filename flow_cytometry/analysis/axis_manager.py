@@ -5,7 +5,7 @@ Ensures consistent auto-ranging and scale synchronization across components.
 """
 
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 import numpy as np
 from typing import Optional, TYPE_CHECKING
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
     from .state import FlowState
     import pandas as pd
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class AxisManager(QObject):
     """Coordinates axis scales and auto-ranging across the module.
@@ -34,7 +34,12 @@ class AxisManager(QObject):
         self._state = state
         self._fallback_scales: dict[str, AxisScale] = {}
 
-    def get_scale(self, channel: str, sample_id: Optional[str] = None) -> AxisScale:
+    def get_scale(
+        self,
+        channel: str,
+        sample_id: Optional[str] = None,
+        default_transform: Optional[TransformType] = None,
+    ) -> AxisScale:
         """Get the current scale for a channel from the sample's primary group."""
         if sample_id:
             sample = self._state.experiment.samples.get(sample_id)
@@ -42,11 +47,13 @@ class AxisManager(QObject):
                 group = self._state.experiment.groups.get(sample.group_ids[0])
                 if group:
                     if channel not in group.channel_scales:
-                        group.channel_scales[channel] = AxisScale()
+                        transform = default_transform or TransformType.LINEAR
+                        group.channel_scales[channel] = AxisScale(transform_type=transform)
                     return group.channel_scales[channel]
         
         if channel not in self._fallback_scales:
-            self._fallback_scales[channel] = AxisScale()
+            transform = default_transform or TransformType.LINEAR
+            self._fallback_scales[channel] = AxisScale(transform_type=transform)
         return self._fallback_scales[channel]
 
     def set_scale(self, channel: str, scale: AxisScale, notify: bool = True, sample_id: Optional[str] = None):

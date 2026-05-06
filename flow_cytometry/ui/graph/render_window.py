@@ -6,7 +6,7 @@ without the subsampling used in the main workspace.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional
 
 from PyQt6.QtCore import Qt, QSize
@@ -27,7 +27,7 @@ from ...analysis.state import FlowState
 from ...analysis.scaling import AxisScale
 from ...analysis.gating import Gate, GateNode
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class RenderWindow(QMainWindow):

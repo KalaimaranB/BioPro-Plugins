@@ -1,7 +1,7 @@
 # 🧪 Flow Cytometry Workspace
 
 A scientist-centric flow cytometry analysis module for BioPro, designed as
-a flexible alternative to FlowJo with intelligent workflow support.
+a flexible alternative to traditional flow cytometry software with intelligent workflow support.
 
 ## Features
 
@@ -32,7 +32,7 @@ a flexible alternative to FlowJo with intelligent workflow support.
 - **FMO Auto-Gate**: 99th percentile boundary detection from FMO controls
 
 ### Visualization (6 display modes)
-- Pseudocolor (hexbin density) — default FlowJo-style view
+- Pseudocolor (hexbin density) — canonical density-style view
 - Dot Plot (subsampled scatter)
 - Contour (2D histogram with smoothing)
 - Density (KDE-based)

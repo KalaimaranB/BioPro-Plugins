@@ -18,7 +18,7 @@ state machine that manages drawing, selection, and editing modes.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from enum import Enum
 from typing import Optional
 
@@ -59,7 +59,7 @@ from .canvas.data_layer import DataLayerRenderer
 from .canvas.gate_layer import GateLayerRenderer
 from .canvas.event_handler import CanvasEventHandler
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 print(f"DEBUG: flow_canvas.py LOADED from {__file__}")
 
 
@@ -517,7 +517,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         
         For biexponential axes with negative decades (A > 0 or min_val < 0),
         negative ticks (-10³, -10², 0, 10², …) are added to give the classic
-        FlowJo-style display.
+        canonical display.
         """
         from matplotlib.ticker import FixedLocator, FixedFormatter
         
@@ -558,9 +558,9 @@ class FlowCanvas(FigureCanvasQTAgg):
             self._ax.axhspan(disp_bounds[0], disp_bounds[1], color="#000000", alpha=0.03, zorder=0, linewidth=0)
 
     def _build_bio_ticks(self, scale, is_biex):
-        """Build FlowJo-canonical tick positions and labels.
+        """Build canonical tick positions and labels.
     
-        Biexponential: -10^3, 0, 10^3, 10^4, 10^5  (FlowJo standard)
+        Biexponential: -10^3, 0, 10^3, 10^4, 10^5  (standard)
         Log:            10^3, 10^4, 10^5
         The shading band added by _add_linear_region_shading() is the
         visual indicator for the squish zone — no extra ticks needed.
@@ -695,6 +695,7 @@ class FlowCanvas(FigureCanvasQTAgg):
         """Cancel the active drawing operation."""
         self._fsm.cancel()
         self._hide_instruction()
+        self._clear_previews()
 
     def _clear_drawing_state(self) -> None:
         """Backward-compatible alias for clearing the drawing state."""

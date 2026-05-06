@@ -68,7 +68,7 @@ class TestGraphWindowAxisIndependence:
         win._state.active_transform_y = "biexponential"
         y_scale = AxisScale(TransformType.BIEXPONENTIAL)
         # Register in state so it's not overwritten during render
-        win._state.channel_scales["SSC-A"] = y_scale.copy()
+        win._state.axis_manager.set_scale("SSC-A", y_scale.copy(), sample_id=win.sample_id)
         win.apply_axis_scale("SSC-A", y_scale)
         win._do_axis_render()
         
@@ -105,7 +105,7 @@ class TestGraphWindowAxisIndependence:
         
         # We must update the state cache as well, otherwise _do_axis_render restores LINEAR
         x_ch = win._x_combo.currentData() or win._x_combo.currentText()
-        win._state.channel_scales[x_ch] = x_scale.copy()
+        win._state.axis_manager.set_scale(x_ch, x_scale.copy(), sample_id=win.sample_id)
         win.apply_axis_scale(x_ch, x_scale)
         
         win._x_scale.min_val, win._x_scale.max_val = win._calculate_auto_range("x")

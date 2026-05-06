@@ -14,7 +14,7 @@ Responsibilities:
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional
 
 from PyQt6.QtCore import QObject, pyqtSignal
@@ -46,7 +46,7 @@ from .services.modifier import GateModifier
 from .services.gating_service import GatingService
 from .services.stats_service import StatsService
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class GateController(QObject):

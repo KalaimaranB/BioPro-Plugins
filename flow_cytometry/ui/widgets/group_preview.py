@@ -4,7 +4,7 @@ Refactored to use AxisManager, PopulationService, and RenderTask.
 """
 
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional, Dict
 
 import numpy as np
@@ -28,7 +28,7 @@ from ...analysis.constants import (
     MAIN_PLOT_MAX_EVENTS_OPTIMIZED,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class PreviewThumbnail(QFrame):
     """A single sample thumbnail in the preview grid."""

@@ -15,7 +15,7 @@ own modules under ``ui/widgets/``, ``ui/graph/``, and ``ui/ribbons/``.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 from PyQt6.QtWidgets import (
@@ -52,7 +52,7 @@ from ..analysis.gate_propagator import GatePropagator
 from biopro.sdk.core.events import CentralEventBus
 from ..analysis import events
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class FlowCytometryPanel(PluginBase):
@@ -87,56 +87,15 @@ class FlowCytometryPanel(PluginBase):
     # state_changed and status_message are now provided by PluginBase
     results_ready = pyqtSignal(object)
 
-    def _setup_logging(self) -> None:
-        """Initialize plugin-specific logging to a temporary file."""
-        import tempfile
-        import os
-        from logging.handlers import RotatingFileHandler
-
-        log_file = os.path.join(tempfile.gettempdir(), "biopro_flow.log")
-        handler = RotatingFileHandler(log_file, maxBytes=1024 * 1024, backupCount=3)
-        formatter = logging.Formatter(
-            '%(asctime)s [%(name)s] %(levelname)s: %(message)s'
-        )
-        handler.setFormatter(formatter)
-        
-        # The package might be named 'flow_cytometry' or 'biopro.plugins.flow_cytometry'
-        pkg_name = __name__.split('.')[0]
-        # CAPTURE EVERYTHING in this package and subpackages
-        plugin_logger = logging.getLogger(pkg_name)
-        plugin_logger.setLevel(logging.DEBUG)
-        plugin_logger.addHandler(handler)
-        plugin_logger.propagate = True # Ensure it bubbles up if needed
-        
-        # Also capture the biopro.plugins prefix just in case it's loaded that way
-        logging.getLogger(f"biopro.plugins.{pkg_name}").addHandler(handler)
-        logging.getLogger(f"biopro.plugins.{pkg_name}").setLevel(logging.DEBUG)
-
-        logger.info(f"Plugin logging initialized for package '{pkg_name}' and 'biopro.plugins.{pkg_name}'. Writing to: {log_file}")
-        
-        # Ensure the handler is removed on shutdown to avoid leaks
-        self._log_handler = handler
-        
-        logger.info(f"Plugin logging initialized. Writing to: {log_file}")
 
     def __init__(self, plugin_id: str = "flow_cytometry", parent=None) -> None:
         super().__init__(plugin_id, parent)
-        self._setup_logging()
 
         # ── State ─────────────────────────────────────────────────────
         self.state = FlowState()
 
-        # ── Analysis Engines ──────────────────────────────────────────
-        from ..analysis.axis_manager import AxisManager
-        from ..analysis.population_service import PopulationService
-        from ..analysis.gate_coordinator import GateCoordinator
-        
-        self.state.axis_manager = AxisManager(self.state, parent=self)
-        self.state.population_service = PopulationService(self.state)
-        
-        self._gate_coordinator = GateCoordinator(self.state, parent=self)
-        self._gate_controller = self._gate_coordinator.controller
-        self._gate_propagator = self._gate_coordinator.propagator
+        # ── Services ──────────────────────────────────────────────────
+        self._setup_services()
 
         # ── Size policy ───────────────────────────────────────────────
         self.setSizePolicy(
@@ -150,11 +109,27 @@ class FlowCytometryPanel(PluginBase):
         # ── Event System ──────────────────────────────────────────────
         # Use SDK CentralEventBus for global messaging.
         # Trigger undo snapshots for structural changes.
-        CentralEventBus.subscribe(events.GATE_CREATED, lambda _: self.push_state())
-        CentralEventBus.subscribe(events.GATE_DELETED, lambda _: self.push_state())
-        CentralEventBus.subscribe(events.GATE_RENAMED, lambda _: self.push_state())
+        self.subscribe_event(events.GATE_CREATED, lambda _: self.push_state())
+        self.subscribe_event(events.GATE_DELETED, lambda _: self.push_state())
+        self.subscribe_event(events.GATE_RENAMED, lambda _: self.push_state())
 
         self.status_message.emit("Flow Cytometry workspace ready.")
+
+    def _setup_services(self) -> None:
+        """Initialize and wire all core analysis and UI services."""
+        from ..analysis.axis_manager import AxisManager
+        from ..analysis.population_service import PopulationService
+        from ..analysis.gate_coordinator import GateCoordinator
+        from .services.workflow_service import WorkflowService
+        
+        self.state.axis_manager = AxisManager(self.state, parent=self)
+        self.state.population_service = PopulationService(self.state)
+        
+        self._gate_coordinator = GateCoordinator(self.state, parent=self)
+        self._gate_controller = self._gate_coordinator.controller
+        self._gate_propagator = self._gate_coordinator.propagator
+        
+        self._workflow_service = WorkflowService(self.state)
 
     # ── UI Construction ───────────────────────────────────────────────
 
@@ -321,7 +296,7 @@ class FlowCytometryPanel(PluginBase):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        logger.info(f"FlowCytometryPanel resized: {self.width()}x{self.height()}")
+        self.logger.info(f"FlowCytometryPanel resized: {self.width()}x{self.height()}")
 
     def _wire_signals(self) -> None:
         """Connect internal widget signals to each other and to the
@@ -592,7 +567,7 @@ class FlowCytometryPanel(PluginBase):
 
     def cleanup(self) -> None:
         """Resource cleanup on plugin close."""
-        logger.info("Cleaning up Flow Cytometry workspace...")
+        self.logger.info("Cleaning up Flow Cytometry workspace...")
         
         # 1. Stop background timers/workers via Coordinator
         if hasattr(self, "_gate_coordinator"):
@@ -603,16 +578,6 @@ class FlowCytometryPanel(PluginBase):
             
         if hasattr(self, "_sample_list"):
             self._sample_list.cleanup()
-
-        # 2. Clear state caches if necessary
-        if hasattr(self, "state"):
-            pass # history is now managed by SDK PluginBase
-        
-        # 3. Remove logging handler to avoid multi-injecting on next load
-        if hasattr(self, "_log_handler"):
-            pkg_name = __name__.split('.')[0]
-            logging.getLogger(pkg_name).removeHandler(self._log_handler)
-            logging.getLogger(f"biopro.plugins.{pkg_name}").removeHandler(self._log_handler)
 
         super().cleanup()
 
@@ -650,35 +615,22 @@ class FlowCytometryPanel(PluginBase):
 
     def export_workflow(self) -> dict:
         """Serialize the workspace for saving to disk."""
-        return self.state.to_workflow_dict()
+        return self._workflow_service.export_workflow()
 
     def load_workflow(self, payload: dict) -> None:
         """Restore the workspace from a saved file."""
-        if not payload:
-            logger.warning("Empty payload received in load_workflow.")
-            return
-
-        logger.info("MainPanel: Loading workflow...")
-        try:
-            # Unwrap if the full BioPro envelope (metadata + payload) is passed
-            actual_data = payload.get("payload", payload)
-            
-            self.state.from_workflow_dict(actual_data)
-            
+        if self._workflow_service.load_workflow(payload):
             # Defer refresh to ensure all state updates are processed
             QTimer.singleShot(50, self._refresh_all)
-            
             self.status_message.emit("Workflow loaded successfully.")
-            logger.info("MainPanel: Workflow load triggered.")
-        except Exception as exc:
-            logger.exception("Failed to load workflow")
-            QMessageBox.critical(self, "Load Error", f"Failed to restore workflow:\n{exc}")
+        else:
+            QMessageBox.critical(self, "Load Error", "Failed to restore workflow. Check logs for details.")
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _refresh_all(self) -> None:
         """Rebuild all UI widgets from the current state."""
-        logger.info("MainPanel: Performing full UI refresh...")
+        self.logger.info("MainPanel: Performing full UI refresh...")
         
         # 1. Refresh data-driven widgets first
         self._groups_panel.refresh()
@@ -691,10 +643,10 @@ class FlowCytometryPanel(PluginBase):
         if not sid and self.state.experiment.samples:
             sid = list(self.state.experiment.samples.keys())[0]
             self.state.current_sample_id = sid
-            logger.info(f"MainPanel: No active sample in workflow, auto-selecting: {sid}")
+            self.logger.info(f"MainPanel: No active sample in workflow, auto-selecting: {sid}")
 
         if sid:
-            logger.info(f"MainPanel: Restoring active sample: {sid}")
+            self.logger.info(f"MainPanel: Restoring active sample: {sid}")
             # Block signals to prevent redundant refresh calls during setup
             self._sample_list._tree.blockSignals(True)
             self._sample_list.select_sample(sid)
@@ -706,14 +658,14 @@ class FlowCytometryPanel(PluginBase):
         
         # 3. Restore gate selection
         if self.state.current_gate_id:
-            logger.info(f"MainPanel: Restoring gate selection: {self.state.current_gate_id}")
+            self.logger.info(f"MainPanel: Restoring gate selection: {self.state.current_gate_id}")
             self._on_gate_selected(self.state.current_gate_id)
             
         # 4. Final refresh for properties and graph
         self._properties_panel.refresh()
         self._graph_manager.refresh()
         
-        logger.info("MainPanel: Full UI refresh complete.")
+        self.logger.info("MainPanel: Full UI refresh complete.")
 
     def _sample_name(self, sample_id: str) -> str:
         """Get a sample's display name by ID."""

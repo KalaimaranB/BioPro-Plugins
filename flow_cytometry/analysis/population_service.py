@@ -5,7 +5,7 @@ without direct coupling to Sample or Experiment objects where possible.
 """
 
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional, TYPE_CHECKING, List
 
 if TYPE_CHECKING:
@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from .experiment import Sample
     import pandas as pd
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class PopulationService:
     """Service for managing populations (GateNodes) across the experiment."""
@@ -80,28 +80,12 @@ class PopulationService:
         # Quadrant gate - special multi-population creation
         quad_node = parent.add_child(gate, name=name or "Quadrants")
         
-        # Create 4 child rectangle gates for each quadrant
-        xlim_hi = 1e9   # effectively unbounded
-        xlim_lo = -1e9
+        # Create 4 child sub-gates for each quadrant
+        q_names = ["Q1", "Q2", "Q3", "Q4"]
 
-        q_defs = [
-            ("Q1 ++", gate.x_mid, xlim_hi,  gate.y_mid, xlim_hi),
-            ("Q2 −+", xlim_lo,   gate.x_mid, gate.y_mid, xlim_hi),
-            ("Q3 −−", xlim_lo,   gate.x_mid, xlim_lo,   gate.y_mid),
-            ("Q4 +−", gate.x_mid, xlim_hi,  xlim_lo,   gate.y_mid),
-        ]
-
-        for q_name, xmin, xmax, ymin, ymax in q_defs:
-            child_gate = RectangleGate(
-                x_param=gate.x_param,
-                y_param=gate.y_param,
-                x_min=xmin,
-                x_max=xmax,
-                y_min=ymin,
-                y_max=ymax,
-                x_scale=gate.x_scale,
-                y_scale=gate.y_scale,
-            )
+        from .gating import QuadrantSubGate
+        for q_name in q_names:
+            child_gate = QuadrantSubGate(gate, q_name)
             quad_node.add_child(child_gate, name=q_name)
             
         return quad_node

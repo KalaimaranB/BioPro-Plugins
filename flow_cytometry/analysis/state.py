@@ -16,7 +16,7 @@ analysis engines so that:
 from __future__ import annotations
 from typing import TYPE_CHECKING
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     from .axis_manager import AxisManager
     from .population_service import PopulationService
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 @dataclass
@@ -164,6 +164,30 @@ class FlowState(PluginState):
             "data": self.data.to_dict(),
             "view": self.view.to_dict(),
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> FlowState:
+        """Reconstruct the nested state objects properly from dict for Undo/Redo."""
+        state = cls()
+        if "data" in data:
+            d_data = data["data"]
+            if "experiment" in d_data and d_data["experiment"]:
+                state.data.experiment = Experiment.from_dict(d_data["experiment"])
+            if "compensation" in d_data and d_data["compensation"]:
+                state.data.compensation = CompensationMatrix.from_dict(d_data["compensation"])
+        if "view" in data:
+            v_data = data["view"]
+            state.view.current_sample_id = v_data.get("current_sample_id")
+            state.view.current_gate_id = v_data.get("current_gate_id")
+            state.view.active_x_param = v_data.get("active_x_param", "FSC-A")
+            state.view.active_y_param = v_data.get("active_y_param", "SSC-A")
+            state.view.active_transform_x = v_data.get("active_transform_x", "linear")
+            state.view.active_transform_y = v_data.get("active_transform_y", "linear")
+            state.view.active_plot_type = v_data.get("active_plot_type", "pseudocolor")
+            state.view.auto_range_on_quality = v_data.get("auto_range_on_quality", True)
+            if "render_config" in v_data:
+                state.view.render_config = RenderConfig.from_dict(v_data["render_config"])
+        return state
 
     # ── Serialization ─────────────────────────────────────────────────
 

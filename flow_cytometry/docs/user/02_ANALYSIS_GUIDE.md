@@ -53,7 +53,7 @@ BioPro provides a powerful, interactive system to refine the visual style of you
 ### The Render Settings Dialog
 This non-modal dialog allows you to tweak parameters and see the results instantly on the plot:
 
-- **Point Size & Opacity**: Dial up the marker size and transparency to create the signature "thick" look seen in FlowJo.
+- **Point Size & Opacity**: Dial up the marker size and transparency to create the signature "thick" look seen in traditional analysis software.
 - **Population Detail (Bins)**: Controls the resolution of the density grid. High detail is better for export; low detail is faster for exploration.
 - **Smoothing (Sigma)**: Adjusts the Gaussian "blur" applied to populations. Higher smoothing creates softer, more continuous clouds.
 - **Background Suppression**: A threshold that snaps low-density background noise to pure blue, cleaning up the plot edges.

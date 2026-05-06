@@ -71,3 +71,14 @@ class RangeGate(Gate):
         d.update(low=self.low, high=self.high)
         d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RangeGate:
+        return cls(
+            x_param=data["x_param"],
+            low=data.get("low", -np.inf),
+            high=data.get("high", np.inf),
+            adaptive=data.get("adaptive", False),
+            gate_id=data.get("gate_id"),
+            x_scale=data.get("x_scale"),
+        )

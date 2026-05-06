@@ -29,3 +29,13 @@ def test_axis_manager_sync_scales(manager):
     scale2 = manager.get_scale("FSC-A")
     assert scale2.min_val == 100
     assert scale2.max_val == 500
+
+def test_axis_manager_smart_default(manager):
+    # Retrieve a non-existent channel scale with a specified default_transform
+    scale = manager.get_scale("SSC-A", default_transform=TransformType.BIEXPONENTIAL)
+    assert scale.transform_type == TransformType.BIEXPONENTIAL
+    
+    # Retrieve an already-existing channel scale with a different default_transform,
+    # it should NOT overwrite the existing transform_type
+    scale_existing = manager.get_scale("SSC-A", default_transform=TransformType.LOG)
+    assert scale_existing.transform_type == TransformType.BIEXPONENTIAL

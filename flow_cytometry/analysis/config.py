@@ -75,7 +75,7 @@ class PseudocolorConfig:
     vibrancy_min: float = constants.VIBRANCY_MIN
     vibrancy_range: float = constants.VIBRANCY_RANGE
     
-    # New: FlowJo visual styling
+    # New: Canonical visual styling
     point_size: float = 1.5
     opacity: float = 0.6
 

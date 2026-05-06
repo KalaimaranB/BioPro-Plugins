@@ -116,3 +116,18 @@ class RectangleGate(Gate):
         d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
         d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> RectangleGate:
+        return cls(
+            x_param=data["x_param"],
+            y_param=data.get("y_param"),
+            x_min=data.get("x_min", -np.inf),
+            x_max=data.get("x_max", np.inf),
+            y_min=data.get("y_min", -np.inf),
+            y_max=data.get("y_max", np.inf),
+            adaptive=data.get("adaptive", False),
+            gate_id=data.get("gate_id"),
+            x_scale=data.get("x_scale"),
+            y_scale=data.get("y_scale"),
+        )

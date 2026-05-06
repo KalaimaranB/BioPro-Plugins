@@ -3,13 +3,13 @@
 Shows all defined groups in the workspace.  Clicking a group filters
 the sample tree below to show only that group's samples.
 
-Like FlowJo's group list: Name, Size (count), Role (compensation,
+Displays group list: Name, Size (count), Role (compensation,
 control, test), and a color indicator.
 """
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -27,7 +27,7 @@ from biopro.ui.theme import Colors, Fonts
 from ...analysis.state import FlowState
 from ...analysis.experiment import Group
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class GroupsPanel(QWidget):

@@ -5,14 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
-import matplotlib
-matplotlib.use("QtAgg")  # noqa: E402
 from biopro.ui.theme import Colors, theme_manager
-
-import numpy as np
-import pandas as pd
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -114,6 +107,7 @@ class DataTableDialog(QDialog):
         accent_primary = _QColor(Colors.ACCENT_PRIMARY)
 
         for ri, (_, row) in enumerate(df.iterrows()):
+            import numpy as np
             for ci, col in enumerate(cols):
                 val = row[col]
                 if val is None or (isinstance(val, float) and np.isnan(val)):
@@ -145,22 +139,42 @@ class DataTableDialog(QDialog):
 
 # ── Chart ─────────────────────────────────────────────────────────────────────
 
-class DensityChart(FigureCanvasQTAgg):
+class DensityChart(QWidget):
     """Matplotlib bar chart — WB or Ponceau-corrected values."""
 
     def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setLayout(QVBoxLayout())
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.fig = None
+        self.canvas = None
+        self.axes = None
+        self.setStyleSheet(f"background-color: {Colors.BG_DARK};")
+
+    def _ensure_canvas(self):
+        """Lazy loader for Matplotlib components."""
+        if self.canvas is not None:
+            return
+        
+        import matplotlib
+        matplotlib.use("QtAgg")
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from matplotlib.figure import Figure
+        
         self.fig = Figure(figsize=(6, 3.2), dpi=100)
         self.fig.patch.set_facecolor(Colors.BG_DARK)
         self.axes = self.fig.add_subplot(111)
-        super().__init__(self.fig)
-        self.setStyleSheet(f"background-color: {Colors.BG_DARK};")
+        self.canvas = FigureCanvasQTAgg(self.fig)
+        self.layout().addWidget(self.canvas)
 
     def plot_densities(
         self,
-        df: pd.DataFrame,
+        df: 'pd.DataFrame',
         mode: str = "wb",
         highlighted_lanes: Optional[list[int]] = None,
     ) -> None:
+        self._ensure_canvas()
+        import pandas as pd
         self.axes.clear()
         self.axes.set_facecolor(Colors.BG_DARK)
         self.axes.tick_params(colors=Colors.FG_SECONDARY)
@@ -183,6 +197,7 @@ class DensityChart(FigureCanvasQTAgg):
         vcol = "ponceau_normalized" if use_pon else "normalized"
 
         sample_df = df[~df["is_ladder"]] if "is_ladder" in df.columns else df
+        import numpy as np
         primary = (
             sample_df
             .sort_values("raw_intensity", ascending=False)
@@ -228,15 +243,16 @@ class DensityChart(FigureCanvasQTAgg):
             color=Colors.FG_PRIMARY, pad=8,
         )
         self.fig.tight_layout()
-        self.draw()
+        self.canvas.draw()
 
     def plot_professor(
             self,
-            df: pd.DataFrame,
+            df: 'pd.DataFrame',
             has_ponceau: bool = False,
             highlighted_lanes: Optional[list[int]] = None,
             slot_colors: Optional[dict[int, str]] = None,
     ) -> None:
+        self._ensure_canvas()
         self.axes.clear()
         self.axes.set_facecolor(Colors.BG_DARK)
         self.axes.tick_params(colors=Colors.FG_SECONDARY)
@@ -311,7 +327,7 @@ class ResultsWidget(QWidget):
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
-        self._df: Optional[pd.DataFrame] = None
+        self._df: Optional['pd.DataFrame'] = None
         self._chart_mode = "wb"
         self._canvas_ref = None
         self._slots: list = []
@@ -453,7 +469,7 @@ class ResultsWidget(QWidget):
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def set_results(self, df: pd.DataFrame) -> None:
+    def set_results(self, df: 'pd.DataFrame') -> None:
         """Update results data.
 
         On the **first** call, initialises the slot count from the number
@@ -462,6 +478,7 @@ class ResultsWidget(QWidget):
         """
         is_first = self._df is None
         self._df = df.copy()
+        import pandas as pd
 
         if is_first:
             # First result: set slot count from lane count
@@ -691,14 +708,14 @@ class ResultsWidget(QWidget):
 
     def _refresh_chart(self) -> None:
         if self._df is None: return
+        import pandas as pd
         slot_colors = {}
         for i, band in enumerate(self._slots):
             if band is not None:
-                slot_colors[i] = self._col(i) # <-- Fix: map color to slot, not lane
-        has_pon = False
-        if "ponceau_raw" in self._df.columns:
-            pon_vals = pd.to_numeric(self._df["ponceau_raw"], errors="coerce").fillna(0)
-            has_pon = bool((pon_vals > 0).any())
+                slot_colors[i] = self._col(i) 
+        
+        pon_vals = pd.to_numeric(self._df["ponceau_raw"], errors="coerce").fillna(0)
+        has_pon = bool((pon_vals > 0).any())
         self.chart.plot_professor(self._df, has_ponceau=has_pon, slot_colors=slot_colors)
 
     def _get_vals(self, band, slot_idx=None):

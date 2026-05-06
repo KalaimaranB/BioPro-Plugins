@@ -2,7 +2,7 @@
 """
 
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Any, Optional
 
 from biopro.sdk.core.analysis import AnalysisBase
@@ -10,7 +10,7 @@ from biopro.sdk.core.events import CentralEventBus
 from .statistics import compute_statistic, StatType
 from . import events as flow_events
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class StatisticsAnalysis(AnalysisBase):
     """Background analyzer for computing population statistics."""
@@ -31,7 +31,7 @@ class StatisticsAnalysis(AnalysisBase):
         if not sample or sample.fcs_data is None:
             return {"error": f"Sample {sample_id} not found or has no data"}
 
-        logger.info(f"StatisticsAnalysis: Starting compute for sample {sample_id}")
+        self.logger.info(f"StatisticsAnalysis: Starting compute for sample {sample_id}")
         
         events = sample.fcs_data.events
         if events is None:
@@ -64,7 +64,8 @@ class StatisticsAnalysis(AnalysisBase):
                     mask = ~mask
                 gated_events = parent_events.loc[mask].copy()
             except Exception as exc:
-                logger.warning(f"Background Stat computation failed for {child.name}: {exc}")
+                self.logger.warning(f"Background Stat computation failed for {child.name}: {exc}")
+                self.signals.analysis_error.emit(f"Stat computation failed for {child.name}: {exc}")
                 results[child.node_id] = {"count": 0, "pct_parent": 0.0, "pct_total": 0.0}
                 continue
 

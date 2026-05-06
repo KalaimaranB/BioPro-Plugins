@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 import numpy as np
 import pandas as pd
 from typing import TYPE_CHECKING, Optional
@@ -15,7 +15,7 @@ from ..renderers.factory import RenderStrategyFactory
 if TYPE_CHECKING:
     from ..flow_canvas import FlowCanvas
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class DataLayerRenderer:
     """Handles rendering of the expensive data layer (scatter, pseudocolor, etc.).

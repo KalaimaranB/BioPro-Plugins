@@ -104,3 +104,57 @@ class QuadrantGate(Gate):
         d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
         d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> QuadrantGate:
+        return cls(
+            x_param=data["x_param"],
+            y_param=data["y_param"],
+            x_mid=data.get("x_mid", 0.0),
+            y_mid=data.get("y_mid", 0.0),
+            adaptive=data.get("adaptive", False),
+            gate_id=data.get("gate_id"),
+            x_scale=data.get("x_scale"),
+            y_scale=data.get("y_scale"),
+        )
+
+class QuadrantSubGate(Gate):
+    """Internal gate representing a single quadrant region.
+    
+    This class satisfies the Liskov Substitution Principle (LSP) by 
+    implementing .contains() correctly for a specific quadrant region, 
+    allowing generic analysis tools to compute statistics for individual 
+    quadrants without specialized logic.
+    """
+    
+    def __init__(
+        self, 
+        parent: QuadrantGate, 
+        quadrant: str,
+        gate_id: Optional[str] = None
+    ):
+        # The sub-gate ID is derived from the parent for consistency
+        gid = gate_id or f"{parent.gate_id}_{quadrant}"
+        super().__init__(parent.x_param, parent.y_param, gate_id=gid)
+        self.parent = parent
+        self.quadrant = quadrant
+
+    def contains(self, events: pd.DataFrame) -> np.ndarray:
+        """Filter events for this specific quadrant."""
+        return self.parent.get_quadrant(events, self.quadrant)
+
+    def copy(self) -> QuadrantSubGate:
+        return QuadrantSubGate(self.parent.copy(), self.quadrant, gate_id=self.gate_id)
+
+    def to_dict(self) -> dict:
+        d = super().to_dict()
+        d.update({
+            "parent_gate": self.parent.to_dict(),
+            "quadrant": self.quadrant
+        })
+        return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> QuadrantSubGate:
+        parent = QuadrantGate.from_dict(data["parent_gate"])
+        return cls(parent, data["quadrant"], gate_id=data.get("gate_id"))

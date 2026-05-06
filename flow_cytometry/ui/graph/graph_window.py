@@ -1,6 +1,6 @@
 """Graph window — interactive 2-D scatter / histogram display.
 
-Equivalent to FlowJo's Graph Window.  Each GraphWindow displays one
+Equivalent to a standard software Graph Window.  Each GraphWindow displays one
 plot of a single population (sample or gated subset) with:
 - X/Y axis dropdowns for parameter selection
 - Transform buttons (linear / log / biexponential)
@@ -15,7 +15,7 @@ and tiling.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional
 
 import numpy as np
@@ -44,7 +44,7 @@ from .flow_canvas import FlowCanvas, DisplayMode, GateDrawingMode
 from .transform_dialog import TransformDialog
 from .render_window import RenderWindow
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 # Map tool names to drawing modes
 _TOOL_MODE_MAP = {
@@ -537,8 +537,15 @@ class GraphWindow(QWidget):
         
         # Sync X scale
         if hasattr(self._state, 'axis_manager'):
-            self._x_scale = self._state.axis_manager.get_scale(x_ch, self._sample_id).copy()
-            self._y_scale = self._state.axis_manager.get_scale(y_ch, self._sample_id).copy()
+            current_x_transform = self._x_scale.transform_type if hasattr(self, '_x_scale') else None
+            current_y_transform = self._y_scale.transform_type if hasattr(self, '_y_scale') else None
+            
+            self._x_scale = self._state.axis_manager.get_scale(
+                x_ch, self._sample_id, default_transform=current_x_transform
+            ).copy()
+            self._y_scale = self._state.axis_manager.get_scale(
+                y_ch, self._sample_id, default_transform=current_y_transform
+            ).copy()
         
         # Save to memory
         sample = self._state.experiment.samples.get(self._sample_id)

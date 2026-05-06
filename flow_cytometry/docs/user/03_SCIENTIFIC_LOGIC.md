@@ -113,7 +113,7 @@ This allows you to see the "full spread" of a negative population alongside a mu
 When looking at 100,000+ events, individual dots begin to overlap, making it impossible to see the "core" of a population. BioPro uses **Pseudocolor Rendering** to turn these overlapping dots into a meaningful heatmap.
 
 ### The Math: Rank Percentile vs. Log-Scaling
-Most software uses simple log-scaling for density, which can result in "pointy" peaks and a lot of sparse noise. BioPro implements **Rank Percentile Normalization** (the "FlowJo" standard) to ensure publication-quality visuals:
+Most software uses simple log-scaling for density, which can result in "pointy" peaks and a lot of sparse noise. BioPro implements **Rank Percentile Normalization** (the industry-standard approach) to ensure publication-quality visuals:
 
 1. **Binning**: We divide the plot into a high-resolution grid (up to 1024x1024).
 2. **Smoothing**: A Gaussian kernel "blurs" the counts, converting discrete dots into continuous clouds.

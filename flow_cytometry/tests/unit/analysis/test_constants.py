@@ -21,7 +21,7 @@ def test_rendering_constants_have_not_drifted():
     assert constants.VIBRANCY_RANGE == 0.85
 
 def test_logicle_defaults_are_standard():
-    """Verify Logicle parameters match the Parks 2006 / FlowJo v11 defaults."""
+    """Verify Logicle parameters match the Parks 2006 / traditional analysis software defaults."""
     assert constants.LOGICLE_T_DEFAULT == 262144.0
     assert constants.LOGICLE_W_DEFAULT == 1.0
     assert constants.LOGICLE_M_DEFAULT == 4.5

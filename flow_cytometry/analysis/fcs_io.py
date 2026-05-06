@@ -11,7 +11,7 @@ Reference:
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -19,7 +19,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 @dataclass
@@ -133,7 +133,7 @@ def _load_with_flowkit(path: Path) -> FCSData:
         )
 
     # Auto-apply embedded compensation if present.
-    # BD FACSDiva writes the key as lowercase 'spill' (no $), FlowJo applies
+    # BD FACSDiva writes the key as lowercase 'spill' (no $), standard analysis software applies
     # this automatically on load.  We do the same here so all downstream
     # rendering sees compensated values without any manual user action.
     is_comp = _auto_apply_spill(path.name, events_df, metadata)

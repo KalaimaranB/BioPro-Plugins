@@ -5,7 +5,7 @@ This dialog is purely a coordinator — all business logic lives in the panels.
 """
 
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QPushButton,
@@ -25,7 +25,7 @@ from .render_panels import (
     DensitySettingsPanel,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 # Map DisplayMode → tab index (must match addTab order below)
 _MODE_TAB = {

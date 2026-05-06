@@ -124,21 +124,18 @@ def download_model_func(progress_callback=None):
 
 
 def load_libraries_func():
-    """Logic moved from LibraryLoaderWorker for use with FunctionalTask."""
-    # --- Image libraries ---
+    """Builds all pipeline instances. Heavy AI imports are deferred to first use."""
     import cv2
     import numpy
     from PIL import Image
 
-    # --- Lightweight CV pipelines ---
     from ..analysis.pipelines.otsu import OtsuPipeline
     from ..analysis.pipelines.watershed import WatershedPipeline
-
-    # --- Heavy AI stack ---
-    import torch
-    from cellpose import models
     from ..analysis.pipelines.cellpose_pipeline import CellposePipeline
 
+    # NOTE: torch and cellpose are NOT imported here. CellposePipeline.__init__
+    # is lightweight — it only sets self.model = None. The actual 1GB model
+    # loads lazily inside _ensure_model() on the first call to .run().
     pipelines = {
         "otsu":      OtsuPipeline(),
         "watershed": WatershedPipeline(),

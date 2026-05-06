@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 import uuid
 from dataclasses import dataclass, field
 from typing import Optional
@@ -13,7 +13,7 @@ import pandas as pd
 
 from .base import Gate
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 @dataclass
 class GateNode:

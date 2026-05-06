@@ -1,5 +1,5 @@
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 import numpy as np
 from scipy.ndimage import gaussian_filter
 from scipy.stats import rankdata
@@ -9,11 +9,11 @@ from fast_histogram import histogram2d as fast_hist2d
 from .base import DisplayStrategy
 from biopro.ui.theme import Colors
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class PseudocolorStrategy(DisplayStrategy):
-    """FlowJo-style pseudocolor density renderer."""
+    """Canonical pseudocolor density renderer."""
 
     def render(self, ax, x, y, **kwargs) -> None:
         """Render density-colored scatter plot using unified robust math."""
@@ -55,7 +55,7 @@ class PseudocolorStrategy(DisplayStrategy):
             vibrancy_range=kwargs.get("vibrancy_range"),
         )
         
-        # Revert to 'o' to maintain FlowJo's thick blue cloud appearance
+        # Revert to 'o' to maintain the classic thick blue cloud appearance
         # Point size 1.0 for Full, 1.5 for Optimized
         cmap_name = kwargs.get("cmap", kwargs.get("colormap", "jet"))
         alpha = kwargs.get("alpha", 0.6)

@@ -6,11 +6,11 @@ without modifying the core FlowCanvas or GateController logic.
 
 from __future__ import annotations
 from typing import Dict, Type, Callable, Optional
-import logging
+from biopro.sdk.utils.logging import get_logger
 
 from ...analysis.gating import Gate
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class GateRegistry:
     """Central registry for gate models and their UI handlers."""

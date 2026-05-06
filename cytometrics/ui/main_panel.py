@@ -11,7 +11,6 @@ from pathlib import Path
 from datetime import datetime
 import requests
 import psutil
-import torch  # Added for VRAM cleanup in shutdown
 
 from PyQt6.QtCore import Qt, pyqtSignal, QRect, QSize, QTimer
 from PyQt6.QtGui import QPixmap, QImage, QPainter, QBrush, QColor, QPen, QFont
@@ -377,8 +376,7 @@ class ModelManagerDialog(QDialog):
             task_scheduler.task_finished.disconnect(_on_finished)
             task_scheduler.task_error.disconnect(_on_error)
             
-            res = results.get("task_result", {})
-            self._on_download_finished(res.get("success", False), "Model downloaded" if res.get("success") else "Failed")
+            self._on_download_finished(results.get("success", False), "Model downloaded" if results.get("success") else "Failed")
 
         def _on_error(tid, error_msg):
             if tid != task_id: return
@@ -571,7 +569,7 @@ class CytoMetricsPanel(PluginBase):
         self.state_changed.connect(self._update_results_tab)
 
         # Kick off heavy AI imports via FunctionalTask
-        from biopro.sdk.core import FunctionalTask
+        from biopro.core.task_scheduler import FunctionalTask
         from biopro.core import task_scheduler
         from .workers import load_libraries_func
         
@@ -582,7 +580,7 @@ class CytoMetricsPanel(PluginBase):
         task_scheduler.task_error.connect(self._on_loader_error_handler)
 
     def _on_loader_finished_handler(self, tid, results):
-        if hasattr(self, '_loader_task_id') and self._loader_task_id and tid == getattr(self._loader_task_id, 'task_id', None):
+        if hasattr(self, '_loader_task_id') and tid == self._loader_task_id:
             from biopro.core import task_scheduler
             try:
                 task_scheduler.task_finished.disconnect(self._on_loader_finished_handler)
@@ -590,11 +588,15 @@ class CytoMetricsPanel(PluginBase):
             except (TypeError, RuntimeError):
                 pass # Already disconnected or object deleted
             
-            res = results.get("task_result", {})
-            self._on_ai_loaded(res.get("success", False), res.get("pipelines", {}), "Loaded")
+            # FunctionalTask emits the function's return dict directly as results.
+            self._on_ai_loaded(
+                results.get("success", False),
+                results.get("pipelines", {}),
+                "Loaded"
+            )
 
     def _on_loader_error_handler(self, tid, error):
-        if hasattr(self, '_loader_task_id') and self._loader_task_id and tid == getattr(self._loader_task_id, 'task_id', None):
+        if hasattr(self, '_loader_task_id') and tid == self._loader_task_id:
             from biopro.core import task_scheduler
             try:
                 task_scheduler.task_finished.disconnect(self._on_loader_finished_handler)
@@ -1066,7 +1068,7 @@ class CytoMetricsPanel(PluginBase):
             QMessageBox.warning(self, "No Image", "Please add a channel first.")
             return
 
-        scale = self.state.get("scale")
+        scale = self.state.scale
         if not scale:
             QMessageBox.warning(self, "Uncalibrated", "Please set the image scale first.")
             return
@@ -1309,46 +1311,10 @@ class CytoMetricsPanel(PluginBase):
             self.table.setItem(row, 4, NumericTableItem(f"{diam:.1f}"))
         self.table.setSortingEnabled(True)
         self.table.scrollToBottom()
-
-        try:
-            # --- RESTORE DATA & CANVAS ---
-            self.state = state_dict
-            scale_val = self.state.get("scale", 0.0)
-            self.lbl_scale.setText(f"Scale: {scale_val:.4f} µm/px" if scale_val > 0 else "Scale: Uncalibrated")
-            self._update_run_button_state()
-
-            cells = self.state.get("cells", [])
-            if cells:
-                self.canvas.draw_cells_from_state(cells)
-        except Exception as e:
-            QMessageBox.critical(self, "Load Error", f"Failed to restore canvas:\n{e}")
-
-        try:
-            # --- RESTORE TABLE ---
-            self.table.setSortingEnabled(False)
-            self.table.setRowCount(0)
-
-            for cell in self.state.get("cells", []):
-                row = self.table.rowCount()
-                self.table.insertRow(row)
-
-                area = cell.get("area", 0)
-                diam = 2 * math.sqrt(area / math.pi) if area > 0 else 0
-
-                self.table.setItem(row, 0, NumericTableItem(f"Cell {cell.get('id', 0)}"))
-                self.table.setItem(row, 1, NumericTableItem(f"{area:.1f}"))
-                self.table.setItem(row, 2, NumericTableItem(f"{cell.get('perim', 0):.1f}"))
-                self.table.setItem(row, 3, NumericTableItem(f"{cell.get('circ', 0):.2f}"))
-                self.table.setItem(row, 4, NumericTableItem(f"{diam:.1f}"))
-
-            self.table.setSortingEnabled(True)
-            self.table.scrollToBottom()
-            self._update_results_tab()
-        except Exception as e:
-            QMessageBox.critical(self, "Load Error", f"Failed to restore table:\n{e}")
+        self._update_results_tab()
 
         # --- RESTORE UI SETTINGS ---
-        ui_params = state_dict.get("ui_params", {})
+        ui_params = self.state.ui_params
         if ui_params:
             self.combo_target_channel.setCurrentText(ui_params.get("target_channel", ""))
             self.combo_seed_channel.setCurrentText(ui_params.get("seed_channel", ""))

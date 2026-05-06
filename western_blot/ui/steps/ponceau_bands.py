@@ -8,34 +8,45 @@ from PyQt6.QtWidgets import (
     QComboBox,
     QGroupBox,
     QLabel,
-    QVBoxLayout, QCheckBox,
+    QVBoxLayout, QCheckBox, QWidget,
 )
-
-import matplotlib
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
-from matplotlib.figure import Figure
 
 from biopro.ui.theme import Colors
 from biopro.sdk.ui import WizardPanel
 from biopro.plugins.western_blot.ui.steps.base_bands_step import BaseBandsStep
 
-matplotlib.use("QtAgg")
-
 logger = logging.getLogger(__name__)
 
 
-class _FactorChart(FigureCanvasQTAgg):
+class _FactorChart(QWidget):
     """Mini bar chart showing per-lane Ponceau loading factors."""
 
     def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self.setLayout(QVBoxLayout())
+        self.layout().setContentsMargins(0, 0, 0, 0)
+        self.fig = None
+        self.canvas = None
+        self.ax = None
+
+    def _ensure_canvas(self):
+        if self.canvas is not None:
+            return
+            
+        import matplotlib
+        matplotlib.use("QtAgg")
+        from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
+        from matplotlib.figure import Figure
+        
         self.fig = Figure(figsize=(5, 2.2), dpi=90)
         self.fig.patch.set_facecolor(Colors.BG_DARK)
         self.ax = self.fig.add_subplot(111)
-        super().__init__(self.fig)
-        self.setStyleSheet(f"background-color: {Colors.BG_DARK};")
-        self._draw_empty()
+        self.canvas = FigureCanvasQTAgg(self.fig)
+        self.layout().addWidget(self.canvas)
+        self.canvas.setStyleSheet(f"background-color: {Colors.BG_DARK};")
 
     def _draw_empty(self) -> None:
+        self._ensure_canvas()
         self.ax.clear()
         self.ax.set_facecolor(Colors.BG_DARK)
         self.ax.text(
@@ -48,7 +59,7 @@ class _FactorChart(FigureCanvasQTAgg):
         for spine in self.ax.spines.values():
             spine.set_visible(False)
         self.fig.tight_layout()
-        self.draw()
+        self.canvas.draw()
 
     def plot_factors(
         self,
@@ -56,6 +67,7 @@ class _FactorChart(FigureCanvasQTAgg):
         num_lanes: int,
         label_prefix: str = "WB",
     ) -> None:
+        self._ensure_canvas()
         self.ax.clear()
         self.ax.set_facecolor(Colors.BG_DARK)
 
@@ -101,7 +113,7 @@ class _FactorChart(FigureCanvasQTAgg):
             self.ax.spines[spine].set_color(Colors.BORDER)
 
         self.fig.tight_layout()
-        self.draw()
+        self.canvas.draw()
 
 
 class PonceauBandsStep(BaseBandsStep):

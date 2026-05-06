@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import TYPE_CHECKING, Optional
 
 from ..gating import GateNode, gate_from_dict
@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from ..experiment import Sample, Experiment
     from ..gating import Gate
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class GatingService:
     """Handles cross-sample gate tree operations.

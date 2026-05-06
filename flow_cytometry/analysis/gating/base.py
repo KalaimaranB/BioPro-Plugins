@@ -3,7 +3,7 @@
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 import uuid
 from abc import ABC, abstractmethod
 from typing import Optional, Any
@@ -11,7 +11,7 @@ from typing import Optional, Any
 import numpy as np
 import pandas as pd
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class Gate(ABC):
     """Abstract base for all gate types.
@@ -92,6 +92,25 @@ class Gate(ABC):
             "y_param": self.y_param,
             "adaptive": self.adaptive,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> Gate:
+        """Reconstruct a Gate instance from a serialized dictionary.
+
+        Args:
+            data: Dictionary containing the serialized gate attributes.
+
+        Returns:
+            An instantiated subclass of Gate.
+        """
+        # Base implementation handles common fields. Subclasses should override
+        # to handle their specific parameters.
+        return cls(
+            x_param=data["x_param"],
+            y_param=data.get("y_param"),
+            adaptive=data.get("adaptive", False),
+            gate_id=data.get("gate_id"),
+        )
 
     def __repr__(self) -> str:
         return f"<{type(self).__name__} on {self.x_param}/{self.y_param}>"

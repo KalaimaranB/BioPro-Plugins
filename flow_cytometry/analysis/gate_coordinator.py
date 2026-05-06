@@ -4,7 +4,7 @@ Orchestrates the GateController (analysis logic) and GatePropagator
 (background synchronization) to provide a unified API for the UI.
 """
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional, List, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
 
@@ -13,7 +13,7 @@ from .gating import Gate, GateNode
 from .gate_controller import GateController
 from .gate_propagator import GatePropagator
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class GateCoordinator(QObject):
     """Facade for all gating operations in the flow module."""

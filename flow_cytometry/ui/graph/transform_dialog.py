@@ -1,4 +1,4 @@
-"""Transform and scaling dialog — the FlowJo 'T' button equivalent.
+"""Transform and scaling dialog.
 
 Allows the user to adjust axis limits and transformation parameters
 (Linear, Log, Biexponential/Logicle) interactively.
@@ -6,7 +6,7 @@ Allows the user to adjust axis limits and transformation parameters
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Callable, Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
@@ -33,7 +33,7 @@ from biopro.ui.theme import Colors, Fonts
 from ...analysis.scaling import AxisScale
 from ...analysis.transforms import TransformType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class AxisTransformPanel(QWidget):

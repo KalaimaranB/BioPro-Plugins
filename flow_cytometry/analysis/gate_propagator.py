@@ -15,7 +15,7 @@ Phase 4 deliverable:
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional
 
 from PyQt6.QtCore import (
@@ -33,7 +33,7 @@ from .experiment import Experiment, Sample
 from .gating import Gate, GateNode, gate_from_dict
 from .state import FlowState
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 from biopro.sdk.core import AnalysisBase, PluginState

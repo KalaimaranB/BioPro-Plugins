@@ -1,7 +1,7 @@
 """Graph manager — tabbed container for multiple GraphWindow instances.
 
 Handles opening, closing, and switching between graph windows in the
-center canvas area of the workspace.  Equivalent to FlowJo's ability
+center canvas area of the workspace.  Allows having multiple graph windows
 to have multiple graph windows open simultaneously.
 
 Also exposes the active graph's signals for gating integration:
@@ -11,7 +11,7 @@ forwards the drawing mode to the currently active graph's canvas.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Optional
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -31,7 +31,7 @@ from biopro.sdk.core.events import CentralEventBus
 from ...analysis import events
 from ...analysis.gating import Gate, GateNode
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class GraphManager(QWidget):

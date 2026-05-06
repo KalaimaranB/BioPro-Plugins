@@ -4,7 +4,7 @@ from __future__ import annotations
 from PyQt6.QtGui import QGuiApplication
 from PyQt6.QtCore import Qt
 
-import numpy as np
+
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtWidgets import (
     QComboBox,
@@ -15,15 +15,7 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
-import matplotlib
-from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg as FigureCanvas
-from matplotlib.backends.backend_qtagg import NavigationToolbar2QT as NavigationToolbar
-from matplotlib.figure import Figure
-from matplotlib.widgets import SpanSelector
-
 from biopro.plugins.western_blot.analysis.state import AnalysisState
-
-matplotlib.use("QtAgg")
 
 
 class LaneProfileDialog(QDialog):
@@ -65,6 +57,14 @@ class LaneProfileDialog(QDialog):
     # ── UI construction ───────────────────────────────────────────────
 
     def _setup_ui(self) -> None:
+        import matplotlib
+        matplotlib.use("QtAgg")
+        from matplotlib.backends.backend_qtagg import (
+            FigureCanvasQTAgg as FigureCanvas,
+            NavigationToolbar2QT as NavigationToolbar,
+        )
+        from matplotlib.figure import Figure
+
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
@@ -127,6 +127,8 @@ class LaneProfileDialog(QDialog):
 
     def _update_plot(self) -> None:
         """Redraw the plot for the currently selected lane."""
+        import numpy as np
+        from matplotlib.widgets import SpanSelector
         self.figure.clear()
         ax = self.figure.add_subplot(111)
 

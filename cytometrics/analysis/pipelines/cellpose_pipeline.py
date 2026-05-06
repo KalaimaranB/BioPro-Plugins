@@ -4,13 +4,20 @@ import math
 import logging
 
 
-from cellpose import models
-import torch  # We need this to check for Mac GPU
-
 
 class CellposePipeline:
     def __init__(self):
         self.name = "AI Smart Detect (Cellpose)"
+        self.model = None
+        self.device = None
+
+    def _ensure_model(self):
+        """Lazy loader for the heavy AI model."""
+        if self.model is not None:
+            return
+
+        import torch
+        from cellpose import models
 
         # --- ENTERPRISE HARDWARE CHECK ---
         if torch.cuda.is_available():
@@ -23,11 +30,11 @@ class CellposePipeline:
             self.device = torch.device('cpu')
             use_gpu = False
 
-        self.model = models.CellposeModel(model_type='cyto3', gpu=use_gpu, device=self.device)
-
-        self.model = models.CellposeModel(model_type='cyto3', gpu=use_gpu, device=self.device)
+        # FIX: Cellpose v4.0.1+ uses 'model' argument instead of 'model_type'
+        self.model = models.CellposeModel(model='cyto3', gpu=use_gpu, device=self.device)
 
     def run(self, image_stack, params, scale=1.0):
+        self._ensure_model()
         target_name = params.get("target_channel")
         use_dual = params.get("use_dual_channel", False)
         seed_name = params.get("seed_channel")
@@ -57,10 +64,11 @@ class CellposePipeline:
         else:
             stacked_img = target_img
 
-        # Run the AI (Deprecated 'channels' argument removed to silence the warning)
+        # Run the AI
         masks, flows, styles = self.model.eval(
             stacked_img,
             diameter=diameter,
+            channels=[0, 0] if not use_dual else [1, 2],
             flow_threshold=flow_threshold
         )
 

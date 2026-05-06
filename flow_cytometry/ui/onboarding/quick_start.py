@@ -14,7 +14,7 @@ Steps:
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
@@ -30,7 +30,7 @@ from PyQt6.QtWidgets import (
 from biopro.ui.theme import Colors, Fonts
 from biopro.shared.ui.ui_components import PrimaryButton, SecondaryButton
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 _STEPS = [

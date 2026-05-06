@@ -5,7 +5,7 @@ Returns an RGBA byte buffer that can be loaded into a QImage/QPixmap.
 """
 
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 import numpy as np
 import pandas as pd
 from typing import Optional, Dict, Any, Tuple, List
@@ -16,7 +16,7 @@ from ...analysis.scaling import AxisScale
 from ...analysis.rendering import compute_pseudocolor_points
 from biopro.ui.theme import Colors
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 from ...analysis.constants import DEFAULT_DENSITY_FACTOR
 

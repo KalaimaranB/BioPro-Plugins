@@ -101,3 +101,15 @@ class PolygonGate(Gate):
         d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
         d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> PolygonGate:
+        return cls(
+            x_param=data["x_param"],
+            y_param=data["y_param"],
+            vertices=[tuple(v) for v in data.get("vertices", [])],
+            x_scale=data.get("x_scale"),
+            y_scale=data.get("y_scale"),
+            adaptive=data.get("adaptive", False),
+            gate_id=data.get("gate_id"),
+        )

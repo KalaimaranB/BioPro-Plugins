@@ -8,7 +8,7 @@ Decoupled from both PyQt and Matplotlib backend details where possible.
 from __future__ import annotations
 import numpy as np
 import pandas as pd
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import Tuple, Optional, Dict, Any
 from fast_histogram import histogram2d as fast_hist2d
 from scipy.ndimage import gaussian_filter, map_coordinates
@@ -26,7 +26,7 @@ from .constants import (
     VIBRANCY_RANGE,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 def compute_pseudocolor_points(
@@ -106,7 +106,7 @@ def compute_pseudocolor_points(
     
     if max_d > 0:
         # 4. Rank Percentile Normalization
-        # FlowJo's "secret sauce": instead of log-scaling, we use the percentile rank 
+        # Industry-standard "secret sauce": instead of log-scaling, we use the percentile rank 
         # of each event's density. This ensures that the "blue cloud" of low-density 
         # events is robustly represented regardless of the absolute density values.
         c_plot = rankdata(densities, method='average') / n_points

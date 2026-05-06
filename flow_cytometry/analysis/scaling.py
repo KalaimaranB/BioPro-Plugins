@@ -7,7 +7,7 @@ robust auto-ranges that ignore extreme outliers.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from dataclasses import dataclass
 from typing import Optional
 
@@ -15,7 +15,7 @@ import numpy as np
 
 from .transforms import TransformType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 @dataclass
@@ -29,7 +29,7 @@ class AxisScale:
     max_val: Optional[float] = None
     
     # Biexponential (Logicle) parameters
-    # Matches FlowJo v11 Transform dialog defaults and naming
+    # Matches standard Transform dialog defaults and naming
     logicle_t: float = 262144.0  # Top data value (determines max scale)
     logicle_w: float = 1.0       # Width Basis (linear range around 0)
     logicle_m: float = 4.5       # Positive decades
@@ -178,7 +178,7 @@ def calculate_auto_range(
 def detect_logicle_top(data) -> float:
     """Return the Logicle T (Top) parameter for this channel's data.
  
-    T is the INSTRUMENT CEILING, not the data maximum.  FlowJo always
+    T is the INSTRUMENT CEILING, not the data maximum. Traditional software always
     uses 2^18 = 262144 for modern digital cytometers regardless of what
     the data actually reaches.  Using a lower T compresses the scale and
     makes the near-zero cluster appear at the wrong position.
@@ -220,14 +220,14 @@ def estimate_logicle_params(
 ) -> tuple[float, float]:
     """Estimate Logicle W and A parameters from data.
 
-    FlowJo defaults: W=1.0 (1 visual decade linear region), A=0.0.
+    Standard industry defaults: W=1.0 (1 visual decade linear region), A=0.0.
     A is only set > 0 when there is measurable negative data.
     """
     valid = data[np.isfinite(data)]
     if len(valid) == 0:
         return 1.0, 0.0
 
-    # FlowJo-standard linear-region width. W=1.0 = squish zone is 2 visual
+    # Industry-standard linear-region width. W=1.0 = squish zone is 2 visual
     # decades wide, matching user requested default.
     w = 1.0
 

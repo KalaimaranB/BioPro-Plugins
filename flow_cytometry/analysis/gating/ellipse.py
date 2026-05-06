@@ -125,3 +125,18 @@ class EllipseGate(Gate):
         d["x_scale"] = ScaleSerializer.to_dict(self.x_scale)
         d["y_scale"] = ScaleSerializer.to_dict(self.y_scale)
         return d
+
+    @classmethod
+    def from_dict(cls, data: dict) -> EllipseGate:
+        return cls(
+            x_param=data["x_param"],
+            y_param=data["y_param"],
+            center=tuple(data.get("center", (0.0, 0.0))),
+            width=data.get("width", 1.0),
+            height=data.get("height", 1.0),
+            angle=data.get("angle", 0.0),
+            adaptive=data.get("adaptive", False),
+            gate_id=data.get("gate_id"),
+            x_scale=data.get("x_scale"),
+            y_scale=data.get("y_scale"),
+        )

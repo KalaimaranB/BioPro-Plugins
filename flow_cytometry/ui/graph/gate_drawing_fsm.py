@@ -6,11 +6,11 @@ easier to add new interactive gate types.
 """
 
 from __future__ import annotations
-import logging
+from biopro.sdk.utils.logging import get_logger
 from enum import Enum, auto
 from typing import Optional, List, Tuple, TYPE_CHECKING
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 if TYPE_CHECKING:
     from .flow_canvas import FlowCanvas

@@ -9,7 +9,7 @@ into the project's ``assets`` directory for portability.
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 import uuid
 from pathlib import Path
 
@@ -32,7 +32,7 @@ from ...analysis.experiment import (
     WorkflowTemplate,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 
 class WorkspaceRibbon(QWidget):

@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
-import logging
+from biopro.sdk.utils.logging import get_logger
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from ..flow_canvas import FlowCanvas
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, "flow_cytometry")
 
 class GateLayerRenderer:
     """Handles rendering of gate overlays and labels.
