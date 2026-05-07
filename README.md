@@ -1,5 +1,6 @@
-# 🧬 BioPro Plugin Ecosystem
+# 🧬 (Archived) BioPro Plugin Ecosystem
 
+**This repo is no longer in use. It is here for archival purposes only. Please refer to the core GitHub.**
 Welcome to the official plugin repository for **BioPro**, the extensible, open-source bio-image analysis ecosystem. 
 
 This repository is a **Monorepo** containing all official analysis modules (e.g., Western Blot, Protein Analyzer). BioPro's built-in `NetworkUpdater` fetches modules directly from this repository, allowing users to install only the tools they need.
